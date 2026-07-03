@@ -1,0 +1,35 @@
+# myAgent gateway(+core) + frontend (spec §10).
+# Usage:
+#   MODEL_ID=glm-5 OPENAI_API_KEY=sk-... docker compose up --build
+# The gateway reads .env at runtime via env_file; MODEL_ID is required.
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - MODEL_ID=${MODEL_ID:?MODEL_ID is required}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+    # Agent state (.tasks/ .memory/ .transcripts/ …) lives in the container's
+    # writable layer at /app (= WORKDIR = code.py's cwd). For persistence across
+    # rebuilds, mount a named volume at /app/state and set the agent's WORKDIR
+    # there — but then skills/ must also be reachable, so leave as-is for the
+    # teaching reference.
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_GATEWAY_URL: ${NEXT_PUBLIC_GATEWAY_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - gateway
+    restart: unless-stopped

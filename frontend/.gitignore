@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# next.js build output
+.next/
+out/
+
+# next.js auto-generated types
+next-env.d.ts
+
+# testing
+coverage/
+test-results/
+playwright-report/
+playwright/.cache/
+
+# misc
+.DS_Store
+*.tsbuildinfo
+*.log
+.env*.local
