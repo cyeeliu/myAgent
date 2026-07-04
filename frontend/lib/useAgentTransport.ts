@@ -7,17 +7,22 @@ import { SSETransport } from "./transports/sse";
 const GATEWAY = process.env.NEXT_PUBLIC_GATEWAY_URL || "http://localhost:8000";
 
 export interface TransportState {
-  sessionId: string | null;
   transport: "ws" | "sse" | null;
   connected: boolean;
   send: (msg: AgentClientMsg) => void;
   interrupt: () => void;
 }
 
-// useAgentTransport: create a session, pick transport (auto → WS, fall back to
-// SSE), dispatch events to the supplied callback. Reconnect on drop.
-export function useAgentTransport(onEvent: (e: AgentEvent) => void): TransportState {
-  const [sessionId, setSessionId] = useState<string | null>(null);
+// useAgentTransport: connect to an existing session (by id), pick transport
+// (auto → WS, fall back to SSE), dispatch events to the supplied callback.
+// Session creation/listing is handled by useSessionManager; this hook just
+// attaches a transport to whichever session id it's given. Reconnects when
+// sessionId changes; passes last_seq=0 so the server replays the session's
+// buffered events and the reducer rebuilds the conversation.
+export function useAgentTransport(
+  sessionId: string | null,
+  onEvent: (e: AgentEvent) => void,
+): TransportState {
   const [transport, setTransport] = useState<"ws" | "sse" | null>(null);
   const [connected, setConnected] = useState(false);
   const transportRef = useRef<Transport | null>(null);
@@ -25,19 +30,11 @@ export function useAgentTransport(onEvent: (e: AgentEvent) => void): TransportSt
   onEventRef.current = onEvent;
 
   useEffect(() => {
+    if (!sessionId) return;
     let cancelled = false;
     (async () => {
-      // 1. create session (auto)
-      const r = await fetch(`${GATEWAY}/api/sessions`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transport: "auto" }),
-      });
-      const { session_id } = await r.json();
-      if (cancelled) return;
-      setSessionId(session_id);
-
-      // 2. try WS, fall back to SSE
-      const wsUrl = `${GATEWAY.replace(/^http/, "ws")}/api/sessions/${session_id}`;
+      // try WS, fall back to SSE
+      const wsUrl = `${GATEWAY.replace(/^http/, "ws")}/api/sessions/${sessionId}?last_seq=0`;
       const ws = new WebSocketTransport(wsUrl);
       ws.onEvent((e) => onEventRef.current(e));
       try {
@@ -50,8 +47,8 @@ export function useAgentTransport(onEvent: (e: AgentEvent) => void): TransportSt
       } catch { /* fall through to SSE */ }
 
       const sse = new SSETransport(
-        `${GATEWAY}/api/sessions/${session_id}/events`,
-        `${GATEWAY}/api/sessions/${session_id}`,
+        `${GATEWAY}/api/sessions/${sessionId}/events`,
+        `${GATEWAY}/api/sessions/${sessionId}`,
       );
       sse.onEvent((e) => onEventRef.current(e));
       await sse.connect();
@@ -64,8 +61,10 @@ export function useAgentTransport(onEvent: (e: AgentEvent) => void): TransportSt
       cancelled = true;
       transportRef.current?.disconnect();
       transportRef.current = null;
+      setConnected(false);
+      setTransport(null);
     };
-  }, []);
+  }, [sessionId]);
 
   const send = useCallback((msg: AgentClientMsg) => {
     transportRef.current?.send(msg);
@@ -75,5 +74,5 @@ export function useAgentTransport(onEvent: (e: AgentEvent) => void): TransportSt
     transportRef.current?.send({ type: "interrupt" });
   }, []);
 
-  return { sessionId, transport, connected, send, interrupt };
+  return { transport, connected, send, interrupt };
 }

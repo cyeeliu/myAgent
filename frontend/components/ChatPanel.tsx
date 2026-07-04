@@ -1,16 +1,24 @@
 "use client";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAgentTransport } from "../lib/useAgentTransport";
 import { ToolCard } from "./ToolCard";
 import { PermissionCard } from "./PermissionCard";
 import { reduce, reduceUser, initialState, type Item } from "../lib/reducer";
 import type { AgentEvent } from "../lib/types";
 
-export function ChatPanel() {
+export function ChatPanel({ sessionId }: { sessionId: string | null }) {
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
   // Reducer state (curAssistant index) lives in a ref so token appends are O(1).
   const stateRef = useRef(initialState());
+
+  // Reset the conversation when the session changes — the transport reconnects
+  // with last_seq=0 and the server replays the new session's buffered events,
+  // which the reducer rebuilds from an empty slate.
+  useEffect(() => {
+    stateRef.current = initialState();
+    setItems([]);
+  }, [sessionId]);
 
   const onEvent = useCallback((e: AgentEvent) => {
     const next = reduce(stateRef.current, e);
@@ -18,7 +26,7 @@ export function ChatPanel() {
     setItems(next.items);
   }, []);
 
-  const { sessionId, transport, connected, send, interrupt } = useAgentTransport(onEvent);
+  const { transport, connected, send, interrupt } = useAgentTransport(sessionId, onEvent);
 
   const submit = () => {
     const text = input.trim();

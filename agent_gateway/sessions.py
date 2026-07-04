@@ -66,6 +66,7 @@ class GatewaySession:
     _perm_lock: threading.Lock = field(default_factory=threading.Lock)
     _worker: Optional[threading.Thread] = None
     _worker_lock: threading.Lock = field(default_factory=threading.Lock)
+    created_at: float = field(default_factory=lambda: __import__("time").time())
     last_activity: float = field(default_factory=lambda: __import__("time").time())
 
     # ── permission future plumbing ──
@@ -113,6 +114,34 @@ class GatewaySession:
 
     def interrupt(self):
         self.agent.interrupted = True
+
+    # ── listing metadata ──
+
+    def _title(self) -> str:
+        """Derive a short title from the first user message in history."""
+        for h in self.agent.history:
+            if not isinstance(h, dict) or h.get("role") != "user":
+                continue
+            c = h.get("content")
+            if isinstance(c, str):
+                return c.strip()[:60] or "(new session)"
+            if isinstance(c, list):
+                for b in c:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        t = (b.get("text") or "").strip()
+                        if t:
+                            return t[:60]
+        return "(new session)"
+
+    def meta(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "transport": self.transport,
+            "created_at": self.created_at,
+            "last_activity": self.last_activity,
+            "title": self._title(),
+            "history_len": len(self.agent.history),
+        }
 
     # ── replay for reconnect ──
 

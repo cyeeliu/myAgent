@@ -82,6 +82,21 @@ async def session_status(sid: str):
         "history_len": len(gs.agent.history),
     }
 
+@app.get("/api/sessions")
+async def list_sessions():
+    """List all live sessions (sidebar session management)."""
+    _maybe_cleanup()
+    return [gs.meta() for gs in manager.all()]
+
+@app.delete("/api/sessions/{sid}")
+async def delete_session(sid: str):
+    gs = manager.get(sid)
+    if gs is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    gs.interrupt()
+    manager.drop(sid)
+    return {"ok": True}
+
 
 @app.websocket("/api/sessions/{sid}")
 async def ws_endpoint(ws: WebSocket, sid: str,
