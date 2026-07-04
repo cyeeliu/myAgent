@@ -9,7 +9,7 @@ export function PermissionCard({ reason, detail, onRespond }: {
   onRespond: (allow: boolean) => void;
 }) {
   return (
-    <div className="my-2 rounded border border-amber-700 bg-amber-950/40 p-3 text-sm">
+    <div className="rounded border border-amber-700 bg-amber-950/40 p-3 text-sm">
       <div className="font-semibold text-amber-300">⚠ Permission requested: {reason}</div>
       {detail && <pre className="mt-1 whitespace-pre-wrap font-mono text-xs text-amber-200">{detail}</pre>}
       <div className="mt-2 flex gap-2">

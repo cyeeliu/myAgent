@@ -11,9 +11,9 @@ export function ToolCard({ name, input, result, blocked }: {
   result?: string;
   blocked?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   return (
-    <div className="my-2 rounded border border-zinc-700 bg-zinc-900 text-sm">
+    <div className="rounded border border-zinc-700 bg-zinc-900 text-sm">
       <button className="flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => setOpen(!open)}>
         <span className="text-cyan-400">🔧 {name}</span>
         {blocked && <span className="text-red-400">(blocked)</span>}
@@ -25,7 +25,7 @@ export function ToolCard({ name, input, result, blocked }: {
           <div><span className="text-zinc-500">input:</span> {JSON.stringify(input)}</div>
           {result !== undefined && (
             <div><span className="text-zinc-500">output:</span>
-              <pre className="mt-1 whitespace-pre-wrap text-zinc-300">{stripAnsi(result)}</pre>
+              <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap text-zinc-300">{stripAnsi(result)}</pre>
             </div>
           )}
         </div>

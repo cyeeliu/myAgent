@@ -12,12 +12,31 @@ export function ChatPanel({ sessionId }: { sessionId: string | null }) {
   // Reducer state (curAssistant index) lives in a ref so token appends are O(1).
   const stateRef = useRef(initialState());
 
+  // Auto-scroll: stick to the bottom while the user is there. If they scroll
+  // up, stop auto-scrolling and surface a ↓ button to jump back down.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [atBottom, setAtBottom] = useState(true);
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+  }, []);
+
+  useEffect(() => { if (atBottom) scrollToBottom(); }, [items, atBottom, scrollToBottom]);
+
   // Reset the conversation when the session changes — the transport reconnects
   // with last_seq=0 and the server replays the new session's buffered events,
   // which the reducer rebuilds from an empty slate.
   useEffect(() => {
     stateRef.current = initialState();
     setItems([]);
+    setAtBottom(true);
   }, [sessionId]);
 
   const onEvent = useCallback((e: AgentEvent) => {
@@ -55,16 +74,30 @@ export function ChatPanel({ sessionId }: { sessionId: string | null }) {
         <button className="rounded bg-zinc-800 px-2 py-1 hover:bg-zinc-700" onClick={interrupt}>Interrupt</button>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 py-4">
-        {items.map((it, i) => {
-          if (it.kind === "user") return <div key={i} className="mb-2 text-right"><span className="inline-block rounded bg-zinc-800 px-3 py-2">{it.text}</span></div>;
-          if (it.kind === "assistant") return <div key={i} className="mb-2 whitespace-pre-wrap text-zinc-100">{it.text}</div>;
-          if (it.kind === "tool") return <ToolCard key={i} name={it.name} input={it.input} result={it.result} blocked={it.blocked} />;
-          if (it.kind === "permission") return !it.resolved ? <PermissionCard key={i} reason={it.reason} detail={it.detail} onRespond={(a) => respondPermission(it.rid, a)} /> : null;
-          if (it.kind === "notice") return <div key={i} className="mb-2 text-xs text-zinc-500">{it.text}</div>;
-          if (it.kind === "error") return <div key={i} className="mb-2 rounded bg-red-950/50 px-3 py-2 text-red-300">{it.text}</div>;
-          return null;
-        })}
+      <div className="relative flex-1">
+        <div ref={scrollRef} onScroll={onScroll}
+             className="absolute inset-0 space-y-2 overflow-y-auto px-4 py-4">
+          {items.map((it, i) => {
+            if (it.kind === "user") return <div key={i} className="text-right"><span className="inline-block rounded bg-zinc-800 px-3 py-2">{it.text}</span></div>;
+            if (it.kind === "assistant") {
+              const text = it.text.replace(/\s+$/, "");
+              if (!text.trim()) return null;  // drop blank/whitespace-only bubbles (e.g. between tool calls)
+              return <div key={i} className="whitespace-pre-wrap text-zinc-100">{text}</div>;
+            }
+            if (it.kind === "tool") return <ToolCard key={i} name={it.name} input={it.input} result={it.result} blocked={it.blocked} />;
+            if (it.kind === "permission") return !it.resolved ? <PermissionCard key={i} reason={it.reason} detail={it.detail} onRespond={(a) => respondPermission(it.rid, a)} /> : null;
+            if (it.kind === "notice") return <div key={i} className="text-xs text-zinc-500">{it.text}</div>;
+            if (it.kind === "error") return <div key={i} className="rounded bg-red-950/50 px-3 py-2 text-red-300">{it.text}</div>;
+            return null;
+          })}
+        </div>
+        {!atBottom && (
+          <button
+            onClick={scrollToBottom}
+            className="absolute bottom-4 right-4 flex h-9 w-9 items-center justify-center rounded-full border border-zinc-700 bg-zinc-800 text-zinc-200 shadow-lg hover:bg-zinc-700"
+            title="scroll to bottom"
+          >↓</button>
+        )}
       </div>
 
       <div className="flex gap-2 border-t border-zinc-800 p-3">

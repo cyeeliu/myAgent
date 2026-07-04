@@ -46,6 +46,11 @@ export function reduce(state: ReducerState, e: AgentEvent): ReducerState {
       break;
     }
     case "tool_start":
+      // A tool call starts a new segment — reset curAssistant so the next
+      // assistant turn (after tool_result) gets a fresh bubble below the
+      // card, instead of appending to the pre-tool bubble and rendering out
+      // of order.
+      curAssistant = null;
       items.push({ kind: "tool", id: e.payload.id, name: e.payload.name, input: e.payload.input });
       break;
     case "tool_result": {
@@ -72,6 +77,9 @@ export function reduce(state: ReducerState, e: AgentEvent): ReducerState {
       curAssistant = null;
       break;
     case "text":
+      // Inter-round notices ([max_tokens] retry, [cron inject], …) act as
+      // segment separators too — reset so subsequent tokens start a new bubble.
+      curAssistant = null;
       items.push({ kind: "notice", text: e.payload.text || "" });
       break;
   }

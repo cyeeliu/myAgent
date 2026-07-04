@@ -54,4 +54,32 @@ describe("reducer", () => {
     expect(s.items[1]).toMatchObject({ kind: "assistant", text: "hi!" });
     expect(s.items).toHaveLength(2);
   });
+
+  it("tokens after a tool_start land in a new bubble below the card (regression)", () => {
+    // Bug: tool_start didn't reset curAssistant, so the next round's tokens
+    // appended to the pre-tool assistant bubble, rendering the follow-up reply
+    // ABOVE the tool card instead of below it.
+    let s = initialState();
+    s = reduce(s, ev("token", { text: "Let me check" }, 1));
+    s = reduce(s, ev("tool_start", { id: "t1", name: "read", input: {} }, 2));
+    s = reduce(s, ev("tool_result", { id: "t1", content: "data", blocked: false }, 3));
+    s = reduce(s, ev("token", { text: "It says data" }, 4));
+    s = reduce(s, ev("done", {}, 5));
+    expect(s.items).toHaveLength(3);
+    expect(s.items[0]).toMatchObject({ kind: "assistant", text: "Let me check" });
+    expect(s.items[1]).toMatchObject({ kind: "tool", name: "read" });
+    expect(s.items[2]).toMatchObject({ kind: "assistant", text: "It says data" });
+  });
+
+  it("tokens after a text notice land in a new bubble (regression)", () => {
+    let s = initialState();
+    s = reduce(s, ev("token", { text: "partial" }, 1));
+    s = reduce(s, ev("text", { text: "[max_tokens] retry" }, 2));
+    s = reduce(s, ev("token", { text: "continued" }, 3));
+    s = reduce(s, ev("done", {}, 4));
+    expect(s.items).toHaveLength(3);
+    expect(s.items[0]).toMatchObject({ kind: "assistant", text: "partial" });
+    expect(s.items[1]).toMatchObject({ kind: "notice" });
+    expect(s.items[2]).toMatchObject({ kind: "assistant", text: "continued" });
+  });
 });
