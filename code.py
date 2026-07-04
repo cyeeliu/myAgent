@@ -168,14 +168,21 @@ def chat_create(model, system=None, messages=None, tools=None,
         return SimpleNamespace(
             content=blocks,
             stop_reason=stop_map.get(choice.finish_reason, choice.finish_reason),
+            interrupted=bool(events is not None and getattr(events, "interrupted", False)),
         )
 
     # Streaming path: emit token deltas, reassemble text + tool_calls.
+    # Check `events.interrupted` between chunks so a client Interrupt stops the
+    # stream mid-response instead of waiting for the model to finish the turn.
     kwargs["stream"] = True
     text_parts: list[str] = []
     tool_calls: dict[int, dict] = {}
     finish_reason = None
+    interrupted = False
     for chunk in client.chat.completions.create(**kwargs):
+        if events is not None and getattr(events, "interrupted", False):
+            interrupted = True
+            break
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta
@@ -196,6 +203,12 @@ def chat_create(model, system=None, messages=None, tools=None,
         if chunk.choices[0].finish_reason:
             finish_reason = chunk.choices[0].finish_reason
 
+    if interrupted:
+        # Drop partial text/tool_calls — a half-formed tool_use has invalid JSON
+        # args and acting on it would be wrong. The streamed tokens already went
+        # to the UI; history stays clean for the next turn.
+        return SimpleNamespace(content=[], stop_reason="interrupted", interrupted=True)
+
     blocks = []
     if text_parts:
         blocks.append(_TextBlock("".join(text_parts)))
@@ -210,6 +223,7 @@ def chat_create(model, system=None, messages=None, tools=None,
     return SimpleNamespace(
         content=blocks,
         stop_reason=stop_map.get(finish_reason, finish_reason),
+        interrupted=False,
     )
 
 SKILLS_DIR = WORKDIR / "skills"
@@ -2312,6 +2326,13 @@ def agent_loop(session: Session):
                 {"type": "text", "text": f"[Error] {type(e).__name__}: {e}"}]})
             session.emit("error", {"error": f"{type(e).__name__}: {e}"})
             session.emit("done", {})
+            return
+
+        # Mid-stream interrupt: the client hit Interrupt during token streaming.
+        # chat_create already dropped the partial content; don't append anything
+        # to history and don't execute half-formed tool_use blocks — just end.
+        if getattr(response, "interrupted", False):
+            session.emit("done", {"reason": "interrupted"})
             return
 
         if response.stop_reason == "max_tokens":
