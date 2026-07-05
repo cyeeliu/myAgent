@@ -45,6 +45,8 @@ services:
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/myagent
       - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - /home/hermes/myAgent/workspace:/app/workspace
     depends_on:
       db:
         condition: service_healthy

@@ -31,7 +31,30 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-WORKDIR = Path.cwd()
+REPO_ROOT = Path.cwd()
+_wd_local = threading.local()
+
+
+def workdir():
+    """Per-thread working directory. Defaults to REPO_ROOT; a session's worker
+    thread overrides via set_workdir() so each session's .tasks/.memory/
+    .transcripts/… and file-tool ops live under workspace/<sid>/."""
+    return getattr(_wd_local, "workdir", REPO_ROOT)
+
+
+def set_workdir(p):
+    p = Path(p)
+    p.mkdir(parents=True, exist_ok=True)
+    for _sub in (".tasks", ".transcripts", ".task_outputs/tool-results",
+                 ".worktrees", ".mailboxes", ".memory"):
+        (p / _sub).mkdir(parents=True, exist_ok=True)
+    _wd_local.workdir = p
+
+
+# CLI compat: dot-dirs at REPO_ROOT when run standalone (no set_workdir called).
+for _sub in (".tasks", ".transcripts", ".task_outputs/tool-results",
+             ".worktrees", ".mailboxes", ".memory"):
+    (REPO_ROOT / _sub).mkdir(parents=True, exist_ok=True)
 client = OpenAI(
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY", "dummy"),
@@ -226,9 +249,15 @@ def chat_create(model, system=None, messages=None, tools=None,
         interrupted=False,
     )
 
-SKILLS_DIR = WORKDIR / "skills"
-TRANSCRIPT_DIR = WORKDIR / ".transcripts"
-TOOL_RESULTS_DIR = WORKDIR / ".task_outputs" / "tool-results"
+SKILLS_DIR = REPO_ROOT / "skills"   # agent-level (shared), not per-session
+
+
+def _transcript_dir():
+    return workdir() / ".transcripts"
+
+
+def _tool_results_dir():
+    return workdir() / ".task_outputs" / "tool-results"
 
 DEFAULT_MAX_TOKENS = 8000
 ESCALATED_MAX_TOKENS = 16000
@@ -365,6 +394,7 @@ class Session:
     lock: threading.RLock = field(default_factory=threading.RLock)
     rounds_since_todo: int = 0
     interrupted: bool = False
+    workdir: object = None        # per-session WORKDIR (workspace/<sid>/); set by gateway
     _seq: int = 0
 
     def emit(self, kind: str, payload: dict = None):
@@ -388,8 +418,8 @@ class Session:
 
 # Tasks are tiny durable records. Later systems add ownership, dependencies,
 # worktrees, and teammates on top of this same file-backed state.
-TASKS_DIR = WORKDIR / ".tasks"
-TASKS_DIR.mkdir(exist_ok=True)
+def _tasks_dir():
+    return workdir() / ".tasks"
 CURRENT_TODOS: list[dict] = []
 
 
@@ -405,7 +435,7 @@ class Task:
 
 
 def _task_path(task_id: str) -> Path:
-    return TASKS_DIR / f"{task_id}.json"
+    return _tasks_dir() / f"{task_id}.json"
 
 
 def create_task(subject: str, description: str = "",
@@ -430,7 +460,7 @@ def load_task(task_id: str) -> Task:
 
 def list_tasks() -> list[Task]:
     return [Task(**json.loads(p.read_text()))
-            for p in sorted(TASKS_DIR.glob("task_*.json"))]
+            for p in sorted(_tasks_dir().glob("task_*.json"))]
 
 
 def get_task_json(task_id: str) -> str:
@@ -489,8 +519,8 @@ def complete_task(task_id: str) -> str:
 
 # Worktree names become filesystem paths, so the teaching version keeps the
 # validation rules strict and reuses them for create/remove/keep.
-WORKTREES_DIR = WORKDIR / ".worktrees"
-WORKTREES_DIR.mkdir(exist_ok=True)
+def _worktrees_dir():
+    return workdir() / ".worktrees"
 
 VALID_WT_NAME = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
 
@@ -508,7 +538,7 @@ def validate_worktree_name(name: str) -> str | None:
 
 def run_git(args: list[str]) -> tuple[bool, str]:
     try:
-        r = subprocess.run(["git"] + args, cwd=WORKDIR,
+        r = subprocess.run(["git"] + args, cwd=workdir(),
                            capture_output=True, text=True, timeout=30)
         out = (r.stdout + r.stderr).strip()
         return r.returncode == 0, out[:5000] if out else "(no output)"
@@ -519,7 +549,7 @@ def run_git(args: list[str]) -> tuple[bool, str]:
 def log_event(event_type: str, worktree_name: str, task_id: str = ""):
     event = {"type": event_type, "worktree": worktree_name,
              "task_id": task_id, "ts": time.time()}
-    events_file = WORKTREES_DIR / "events.jsonl"
+    events_file = _worktrees_dir() / "events.jsonl"
     with open(events_file, "a") as f:
         f.write(json.dumps(event) + "\n")
 
@@ -535,7 +565,7 @@ def create_worktree(name: str, task_id: str = "") -> str:
             load_task(task_id)
         except FileNotFoundError:
             return f"Error: task {task_id} not found"
-    path = WORKTREES_DIR / name
+    path = _worktrees_dir() / name
     if path.exists():
         return f"Worktree '{name}' already exists at {path}"
     ok, result = run_git(["worktree", "add", str(path), "-b", f"wt/{name}", "HEAD"])
@@ -571,7 +601,7 @@ def remove_worktree(name: str, discard_changes: bool = False) -> str:
     err = validate_worktree_name(name)
     if err:
         return err
-    path = WORKTREES_DIR / name
+    path = _worktrees_dir() / name
     if not path.exists():
         return f"Worktree '{name}' not found"
     if not discard_changes:
@@ -669,7 +699,7 @@ PROMPT_SECTIONS = {
              "request_shutdown, request_plan, review_plan, "
              "create_worktree, remove_worktree, keep_worktree, "
              "connect_mcp. MCP tools are prefixed mcp__{server}__{tool}.",
-    "workspace": f"Working directory: {WORKDIR}",
+    "workspace": f"Working directory: {workdir()}",
     "memory": "Relevant memories are injected below when available.",
 }
 
@@ -696,7 +726,7 @@ def assemble_system_prompt(context: dict) -> str:
 def safe_path(p: str, cwd: Path = None) -> Path:
     # File tools stay inside the workspace or teammate worktree. Bash remains
     # powerful on purpose and is controlled by the permission hook instead.
-    base = cwd or WORKDIR
+    base = cwd or workdir()
     path = (base / p).resolve()
     if not path.is_relative_to(base):
         raise ValueError(f"Path escapes workspace: {p}")
@@ -707,7 +737,7 @@ def run_bash(command: str, cwd: Path = None,
              run_in_background: bool = False) -> str:
     # run_in_background is consumed by the dispatcher; direct execution ignores it.
     try:
-        r = subprocess.run(command, shell=True, cwd=cwd or WORKDIR,
+        r = subprocess.run(command, shell=True, cwd=cwd or workdir(),
                            capture_output=True, text=True, timeout=120)
         out = (r.stdout + r.stderr).strip()
         return out[:50000] if out else "(no output)"
@@ -755,7 +785,7 @@ def run_edit(path: str, old_text: str, new_text: str,
 def run_glob(pattern: str, cwd: Path = None) -> str:
     import glob as g
     try:
-        base = cwd or WORKDIR
+        base = cwd or workdir()
         results = []
         for match in g.glob(pattern, root_dir=base):
             if (base / match).resolve().is_relative_to(base):
@@ -808,8 +838,8 @@ def run_todo_write(todos: list) -> str:
 
 # Team communication is append-only JSONL mailboxes. This keeps the protocol
 # inspectable on disk and lets background teammates send messages.
-MAILBOX_DIR = WORKDIR / ".mailboxes"
-MAILBOX_DIR.mkdir(exist_ok=True)
+def _mailbox_dir():
+    return workdir() / ".mailboxes"
 
 
 class MessageBus:
@@ -818,14 +848,14 @@ class MessageBus:
         msg = {"from": from_agent, "to": to_agent,
                "content": content, "type": msg_type,
                "ts": time.time(), "metadata": metadata or {}}
-        inbox = MAILBOX_DIR / f"{to_agent}.jsonl"
+        inbox = _mailbox_dir() / f"{to_agent}.jsonl"
         with open(inbox, "a") as f:
             f.write(json.dumps(msg) + "\n")
         terminal_print(f"  \033[33m[bus] {from_agent} → {to_agent}: "
                        f"({msg_type}) {content[:50]}\033[0m")
 
     def read_inbox(self, agent: str) -> list[dict]:
-        inbox = MAILBOX_DIR / f"{agent}.jsonl"
+        inbox = _mailbox_dir() / f"{agent}.jsonl"
         if not inbox.exists():
             return []
         msgs = [json.loads(line) for line in inbox.read_text().splitlines()
@@ -890,7 +920,7 @@ IDLE_TIMEOUT = 60
 
 def scan_unclaimed_tasks() -> list[dict]:
     unclaimed = []
-    for f in sorted(TASKS_DIR.glob("task_*.json")):
+    for f in sorted(_tasks_dir().glob("task_*.json")):
         task = json.loads(f.read_text())
         if (task.get("status") == "pending"
                 and not task.get("owner")
@@ -925,7 +955,7 @@ def idle_poll(agent_name: str, messages: list,
             if "Claimed" in result:
                 wt_info = ""
                 if task_data.get("worktree"):
-                    wt_path = WORKTREES_DIR / task_data["worktree"]
+                    wt_path = _worktrees_dir() / task_data["worktree"]
                     wt_info = f"\nWork directory: {wt_path}"
                     if worktree_context is not None:
                         worktree_context["path"] = str(wt_path)
@@ -998,7 +1028,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
             result = claim_task(task_id, owner=name)
             if "Claimed" in result:
                 task = load_task(task_id)
-                wt_ctx["path"] = (str(WORKTREES_DIR / task.worktree)
+                wt_ctx["path"] = (str(_worktrees_dir() / task.worktree)
                                   if task.worktree else None)
             return result
 
@@ -1266,7 +1296,7 @@ def large_output_hook(block, output):
 
 
 def user_prompt_hook(query: str):
-    print(f"\033[90m[HOOK] UserPromptSubmit: {WORKDIR}\033[0m")
+    print(f"\033[90m[HOOK] UserPromptSubmit: {workdir()}\033[0m")
     return None
 
 
@@ -1293,7 +1323,7 @@ register_hook("Stop", stop_hook)
 # ── Subagent Tool ──
 
 SUB_SYSTEM = (
-    f"You are a coding subagent at {WORKDIR}. "
+    f"You are a coding subagent at {workdir()}. "
     "Complete the task, then return a concise final summary. "
     "Do not spawn more agents."
 )
@@ -1429,8 +1459,8 @@ def collect_tool_results(messages: list):
 def persist_large_output(tool_use_id: str, output: str) -> str:
     if len(output) <= PERSIST_THRESHOLD:
         return output
-    TOOL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = TOOL_RESULTS_DIR / f"{tool_use_id}.txt"
+    _tool_results_dir().mkdir(parents=True, exist_ok=True)
+    path = _tool_results_dir() / f"{tool_use_id}.txt"
     if not path.exists():
         path.write_text(output)
     return (f"<persisted-output>\nFull output: {path}\n"
@@ -1491,8 +1521,8 @@ def micro_compact(messages: list) -> list:
 
 
 def write_transcript(messages: list) -> Path:
-    TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
-    path = TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
+    _transcript_dir().mkdir(parents=True, exist_ok=True)
+    path = _transcript_dir() / f"transcript_{int(time.time())}.jsonl"
     with path.open("w") as f:
         for msg in messages:
             f.write(json.dumps(msg, default=str) + "\n")
@@ -1662,7 +1692,8 @@ def collect_background_results() -> list[str]:
 
 # Cron jobs are stored separately from conversation history. When a job fires,
 # it becomes a scheduled prompt that is injected back into the same agent loop.
-DURABLE_PATH = WORKDIR / ".scheduled_tasks.json"
+def _durable_path():
+    return workdir() / ".scheduled_tasks.json"
 
 
 @dataclass
@@ -1764,14 +1795,14 @@ def validate_cron(cron_expr: str) -> str | None:
 
 def save_durable_jobs():
     durable = [asdict(job) for job in scheduled_jobs.values() if job.durable]
-    DURABLE_PATH.write_text(json.dumps(durable, indent=2))
+    _durable_path().write_text(json.dumps(durable, indent=2))
 
 
 def load_durable_jobs():
-    if not DURABLE_PATH.exists():
+    if not _durable_path().exists():
         return
     try:
-        for item in json.loads(DURABLE_PATH.read_text()):
+        for item in json.loads(_durable_path().read_text()):
             job = CronJob(**item)
             if not validate_cron(job.cron):
                 scheduled_jobs[job.id] = job
@@ -2221,14 +2252,18 @@ BUILTIN_HANDLERS = {
 
 # ── Context ──
 
-MEMORY_DIR = WORKDIR / ".memory"
-MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
+def _memory_dir():
+    return workdir() / ".memory"
+
+
+def _memory_index():
+    return _memory_dir() / "MEMORY.md"
 
 
 def update_context(context: dict, messages: list) -> dict:
     memories = ""
-    if MEMORY_INDEX.exists():
-        memories = MEMORY_INDEX.read_text()[:2000]
+    if _memory_index().exists():
+        memories = _memory_index().read_text()[:2000]
     return {
         "memories": memories,
         "connected_mcp": list(mcp_clients.keys()),

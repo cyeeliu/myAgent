@@ -185,16 +185,31 @@ async def get_skills():
 
 
 @app.get("/api/tasks")
-async def get_tasks():
-    return [code.get_task_json(t.id) for t in code.list_tasks()]
+async def get_tasks(sid: Optional[str] = None):
+    """Tasks are per-session (each session has its own workspace/.tasks/).
+    Pass ?sid= to read a specific session's tasks; omit for the default wd."""
+    gs = manager.get(sid) if sid else None
+    wd = gs.agent.workdir if gs else None
+
+    def _read():
+        code.set_workdir(wd if wd is not None else code.REPO_ROOT)
+        return [code.get_task_json(t.id) for t in code.list_tasks()]
+    return await asyncio.to_thread(_read)
 
 
 @app.get("/api/memories")
-async def get_memories():
-    idx = code.MEMORY_INDEX
-    if not idx.exists():
-        return {"text": ""}
-    return {"text": idx.read_text()}
+async def get_memories(sid: Optional[str] = None):
+    """Memory is per-session (workspace/<sid>/.memory/)."""
+    gs = manager.get(sid) if sid else None
+    wd = gs.agent.workdir if gs else None
+
+    def _read():
+        code.set_workdir(wd if wd is not None else code.REPO_ROOT)
+        idx = code._memory_index()
+        if not idx.exists():
+            return {"text": ""}
+        return {"text": idx.read_text()}
+    return await asyncio.to_thread(_read)
 
 
 # SSE routes registered by sse.py

@@ -21,10 +21,11 @@ export function Sidebar({ sm }: { sm: SessionManager }) {
     let cancelled = false;
     async function refresh() {
       try {
+        const sidQ = sm.currentId ? `?sid=${sm.currentId}` : "";
         const [s, t, m] = await Promise.all([
           fetch(`${GATEWAY}/api/skills`).then((r) => r.json()),
-          fetch(`${GATEWAY}/api/tasks`).then((r) => r.json()),
-          fetch(`${GATEWAY}/api/memories`).then((r) => r.json()),
+          fetch(`${GATEWAY}/api/tasks${sidQ}`).then((r) => r.json()),
+          fetch(`${GATEWAY}/api/memories${sidQ}`).then((r) => r.json()),
         ]);
         if (cancelled) return;
         setSkills(Array.isArray(s) ? s : []);
@@ -35,7 +36,7 @@ export function Sidebar({ sm }: { sm: SessionManager }) {
     refresh();
     const id = setInterval(refresh, 4000);
     return () => { cancelled = true; clearInterval(id); };
-  }, []);
+  }, [sm.currentId]);
 
   return (
     <aside className="flex w-72 flex-col border-r border-zinc-800 bg-zinc-950 text-sm">

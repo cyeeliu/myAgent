@@ -162,6 +162,8 @@ class GatewaySession:
 
     def _run_turn(self):
         try:
+            if self.agent.workdir is not None:
+                code.set_workdir(self.agent.workdir)
             with self.agent.lock:
                 code.agent_loop(self.agent)
         except Exception as e:  # never let the worker die silently
@@ -228,6 +230,7 @@ class SessionManager:
         agent = Session(transport=transport if transport in ("ws", "sse") else "ws",
                         sinks=[sink], permission=permission,
                         context=code.update_context({}, []))
+        agent.workdir = code.REPO_ROOT / "workspace" / sid
         if history:
             agent.history = list(history)
             # Seed the pipe with synthesized replay frames so a reconnecting
