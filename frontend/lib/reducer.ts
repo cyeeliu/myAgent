@@ -11,10 +11,13 @@ export type Item =
 export interface ReducerState {
   items: Item[];
   curAssistant: number | null; // index of the assistant bubble accumulating tokens
+  lastSeq: number;             // highest event seq processed — dedupes across
+                               // duplicate WS delivery (StrictMode double-mount,
+                               // replay reprocess, etc.)
 }
 
 export function initialState(): ReducerState {
-  return { items: [], curAssistant: null };
+  return { items: [], curAssistant: null, lastSeq: 0 };
 }
 
 // Append a user-authored message. Must go through the reducer (not just React
@@ -24,6 +27,7 @@ export function reduceUser(state: ReducerState, text: string): ReducerState {
   return {
     items: [...state.items, { kind: "user", text }],
     curAssistant: null,
+    lastSeq: state.lastSeq,
   };
 }
 
@@ -31,9 +35,20 @@ export function reduceUser(state: ReducerState, text: string): ReducerState {
 // tool / permission / done / error / compacted transitions are unit-testable
 // without rendering.
 export function reduce(state: ReducerState, e: AgentEvent): ReducerState {
+  // Dedupe by monotonic seq: a second WS (StrictMode dev double-mount) or a
+  // replay reprocess can redeliver the same event. Skip if already seen.
+  const seq = (e as any).seq || 0;
+  if (seq > 0 && seq <= state.lastSeq) return state;
+  const lastSeq = Math.max(state.lastSeq, seq);
   const items = [...state.items];
   let curAssistant = state.curAssistant;
   switch (e.kind) {
+    case "user":
+      // Server-replayed user bubble (session hydration). Live user messages go
+      // through reduceUser instead; this kind only appears in replay frames.
+      curAssistant = null;
+      items.push({ kind: "user", text: e.payload.text || "" });
+      break;
     case "token": {
       if (curAssistant === null) {
         items.push({ kind: "assistant", text: "" });
@@ -83,5 +98,5 @@ export function reduce(state: ReducerState, e: AgentEvent): ReducerState {
       items.push({ kind: "notice", text: e.payload.text || "" });
       break;
   }
-  return { items, curAssistant };
+  return { items, curAssistant, lastSeq };
 }

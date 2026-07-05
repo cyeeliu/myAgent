@@ -4,44 +4,37 @@ Server → client: agent event frames {seq, kind, payload} (token, text,
 tool_start, tool_result, permission_request, error, compacted, done) + ping.
 Client → server: {type: "user_message"|"permission_response"|"interrupt"|"resume", ...}
 
-Reconnect: client sends {type:"resume", last_seq: N} as the first message;
-server replays buffered frames with seq > N then continues the live drain.
+Reconnect: client sends ?last_seq=N on the WS url; server replays buffered
+frames with seq > N (pipe.replay_since) then continues the live drain
+(pipe.live). The pipe is either in-memory (queue+deque) or Redis Streams —
+this handler is pipe-agnostic.
 """
 from __future__ import annotations
 import asyncio
 import json
-import queue as _queue
 import time
 
 from fastapi import WebSocket
 
 HEARTBEAT_INTERVAL = 15.0
-POLL_INTERVAL = 0.05
 
 
 async def _sender(ws: WebSocket, session, last_seq: int):
-    """Drain the session's thread-safe queue and send frames.
-    Skips frames already replayed from the buffer. Polls with get_nowait so
-    cancellation is prompt (no executor thread blocking on get)."""
-    q = session.queue
+    """Replay missed frames then drain live events from the pipe, forwarding to
+    the WS. Emits a ping heartbeat every HEARTBEAT_INTERVAL of silence."""
     last_beat = time.monotonic()
-    while True:
-        try:
-            frame = q.get_nowait()
-        except _queue.Empty:
+    async for tick in session.pipe.live(last_seq):
+        if tick is None:
+            # idle tick (pipe.live yields None on its block-timeout)
             if time.monotonic() - last_beat >= HEARTBEAT_INTERVAL:
                 await ws.send_json({"seq": 0, "kind": "ping",
                                     "payload": {"t": time.time()}})
                 last_beat = time.monotonic()
-                session.last_activity = time.time()  # heartbeat keeps the session alive
-            await asyncio.sleep(POLL_INTERVAL)
+                session.last_activity = time.time()
             continue
-        seq = frame.get("seq", 0)
-        if seq and seq <= last_seq:
-            continue  # already replayed from buffer; skip
-        last_seq = max(last_seq, seq)
-        await ws.send_json(frame)
+        await ws.send_json(tick)
         session.last_activity = time.time()
+        last_beat = time.monotonic()
 
 
 async def _receiver(ws: WebSocket, session):
@@ -78,9 +71,10 @@ async def handle_ws(ws: WebSocket, session, last_seq: int = 0):
     await ws.accept()
     session.last_activity = time.time()
     # Replay buffered events missed during reconnect, then run sender + receiver.
-    for frame in session.snapshot_since(last_seq):
-        await ws.send_json(frame)
     last = last_seq
+    for frame in session.pipe.replay_since(last_seq):
+        await ws.send_json(frame)
+        last = frame["seq"]
     sender = asyncio.create_task(_sender(ws, session, last))
     receiver = asyncio.create_task(_receiver(ws, session))
     try:
@@ -88,4 +82,4 @@ async def handle_ws(ws: WebSocket, session, last_seq: int = 0):
     finally:
         for t in (sender, receiver):
             t.cancel()
-        # The agent worker thread is left to finish; its events stay buffered.
+        # The agent worker thread is left to finish; its events stay in the pipe.

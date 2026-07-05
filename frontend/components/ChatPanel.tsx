@@ -50,12 +50,9 @@ export function ChatPanel({ sessionId }: { sessionId: string | null }) {
   const submit = () => {
     const text = input.trim();
     if (!text || !connected) return;
-    // Route the user message through the reducer so the ref (source of truth)
-    // and React state stay in sync — otherwise the next token event recomputes
-    // items from a stale ref and wipes the user bubble.
-    const next = reduceUser(stateRef.current, text);
-    stateRef.current = next;
-    setItems(next.items);
+    // The server emits a `user` event back over the transport; the reducer
+    // (onEvent) adds the bubble from that, keeping the ref (source of truth)
+    // driven solely by events — no optimistic add that could duplicate.
     send({ type: "user_message", text });
     setInput("");
   };

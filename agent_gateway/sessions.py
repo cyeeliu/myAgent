@@ -1,56 +1,109 @@
 """Session manager: one agent core Session per chat session.
 
 Each GatewaySession owns:
-  - a code.Session (the agent core state) with an AsyncQueueSink attached;
-  - an asyncio.Queue the WS/SSE pump drains (filled thread-safely by the sink);
-  - a replay buffer (seq → frame) for reconnect/resume (Last-Event-ID or WS resume);
+  - a code.Session (the agent core state) with a PipeSink attached;
+  - an EventPipe (in-memory queue+deque OR Redis Streams) the WS/SSE pump drains;
   - a pending-permissions map (request_id → Future) the FuturePermission blocks on;
   - a worker thread that runs code.agent_loop per posted user message.
 
-The agent loop runs in a thread (it's synchronous); events bridge to the async
-WS/SSE pump via loop.call_soon_threadsafe(queue.put_nowait, ...).
+The agent loop runs in a thread (synchronous); events bridge to the async WS/SSE
+pump via the EventPipe (see pipe.py). Postgres (db.py) holds durable history.
 """
 from __future__ import annotations
 import asyncio
 import threading
+import time
 import uuid
-import queue as _queue
-from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import code
 from code import Session, EventSink, FuturePermission
+from . import db
+from . import pipe as pipe_mod
 
-# Replay buffer caps (spec §7): 1000 events or 4MB, whichever first.
-MAX_BUFFER_EVENTS = 1000
-MAX_BUFFER_BYTES = 4 * 1024 * 1024
 PERMISSION_TIMEOUT = 120.0
 
+# Internal user prompts injected by the agent (max-tokens continuation, etc.)
+# — skipped during replay synthesis so they don't render as user bubbles.
+CONTINUATION_PROMPT = "Continue from the previous response. Do not repeat completed work."
 
-class ThreadQueueSink(EventSink):
-    """EventSink that pushes frames onto a thread-safe queue.Queue.
 
-    Also appends each frame to a replay buffer so reconnecting clients (WS
-    `resume` or SSE `Last-Event-ID`) can fetch missed events. Using queue.Queue
-    (not asyncio.Queue) avoids event-loop affinity issues: the agent worker
-    thread puts from any thread; the async WS/SSE pump drains via
-    run_in_executor.
-    """
+def _stringify(content: Any) -> str:
+    """Flatten a message content (str or list of blocks) to a plain string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict):
+                if b.get("type") == "text":
+                    parts.append(b.get("text", ""))
+                elif "text" in b:
+                    parts.append(b.get("text", ""))
+        return "".join(parts)
+    return str(content)
+
+
+def synthesize_frames(history: list) -> list[dict]:
+    """Rebuild replay frames from persisted history so a freshly hydrated
+    session can replay its full conversation. Returns frames with seq 1..N;
+    the caller seeds them into the pipe and advances agent._seq to N."""
+    seq = 0
+    frames: list[dict] = []
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        if role == "user":
+            if isinstance(content, str):
+                if content == CONTINUATION_PROMPT or content.startswith("[Compacted."):
+                    continue  # internal prompt, not a real user turn
+                seq += 1
+                frames.append({"seq": seq, "kind": "user", "payload": {"text": content, "seq": seq}})
+            elif isinstance(content, list):
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "tool_result":
+                        seq += 1
+                        frames.append({"seq": seq, "kind": "tool_result",
+                                       "payload": {"id": b.get("tool_use_id") or b.get("id"),
+                                                   "content": _stringify(b.get("content")),
+                                                   "blocked": bool(b.get("is_error")),
+                                                   "seq": seq}})
+        elif role == "assistant":
+            if isinstance(content, str):
+                seq += 1
+                frames.append({"seq": seq, "kind": "token", "payload": {"text": content, "seq": seq}})
+            elif isinstance(content, list):
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "text":
+                        seq += 1
+                        frames.append({"seq": seq, "kind": "token",
+                                       "payload": {"text": b.get("text", ""), "seq": seq}})
+                    elif b.get("type") == "tool_use":
+                        seq += 1
+                        frames.append({"seq": seq, "kind": "tool_start",
+                                       "payload": {"id": b.get("id"), "name": b.get("name"),
+                                                   "input": b.get("input", {}), "seq": seq}})
+    return frames
+
+
+class PipeSink(EventSink):
+    """EventSink that publishes frames to the session's EventPipe."""
     streaming = True
 
-    def __init__(self, out: "queue.Queue", buffer: deque, buffer_lock: threading.Lock):
-        self._out = out
-        self._buffer = buffer
-        self._buffer_lock = buffer_lock
+    def __init__(self, ep: pipe_mod.EventPipe):
+        self._pipe = ep
 
     def emit(self, kind: str, payload: dict):
         seq = payload.get("seq", 0)
-        frame = {"seq": seq, "kind": kind, "payload": payload}
-        with self._buffer_lock:
-            self._buffer.append(frame)
-        self._out.put(frame)  # thread-safe, unbounded
+        self._pipe.publish(seq, kind, payload)
 
 
 @dataclass
@@ -58,9 +111,7 @@ class GatewaySession:
     session_id: str
     transport: str                       # ws | sse (auto resolved by caller)
     agent: Session
-    queue: "_queue.Queue"
-    buffer: deque
-    buffer_lock: threading.Lock
+    pipe: pipe_mod.EventPipe
     loop: asyncio.AbstractEventLoop
     pending_permissions: dict[str, Future] = field(default_factory=dict)
     _perm_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -93,9 +144,16 @@ class GatewaySession:
         with self._worker_lock:
             if self._worker is not None and self._worker.is_alive():
                 return False
-            self.last_activity = __import__("time").time()
+            self.last_activity = time.time()
             self.agent.history.append({"role": "user", "content": text})
             self.agent.interrupted = False
+            # Record the user message in the event pipe so a reconnecting client
+            # (WS last_seq=0 replay) rebuilds the user bubble. Without this the
+            # stream only has token/tool frames and user messages vanish on refresh.
+            self.agent.emit("user", {"text": text})
+            # Persist the user message immediately so a mid-turn crash keeps it.
+            db.save_history(self.session_id, self.agent.history,
+                            self.last_activity, self._title())
             t = threading.Thread(target=self._run_turn, name=f"agent-{self.session_id}",
                                   daemon=True)
             self._worker = t
@@ -112,6 +170,13 @@ class GatewaySession:
                 self.agent.emit("done", {"reason": "crash"})
             except Exception:
                 pass
+        finally:
+            # Persist the full history at turn end (DB is the durable source).
+            try:
+                db.save_history(self.session_id, self.agent.history,
+                                time.time(), self._title())
+            except Exception:
+                pass  # persistence failure must not mask the turn result
 
     def interrupt(self):
         self.agent.interrupted = True
@@ -144,35 +209,64 @@ class GatewaySession:
             "history_len": len(self.agent.history),
         }
 
-    # ── replay for reconnect ──
-
-    def snapshot_since(self, last_seq: int) -> list[dict]:
-        """Return buffered frames with seq > last_seq, in order."""
-        with self.buffer_lock:
-            return [f for f in self.buffer if f["seq"] > last_seq]
-
 
 class SessionManager:
     def __init__(self):
         self._sessions: dict[str, GatewaySession] = {}
         self._lock = threading.Lock()
 
-    def create(self, transport: str = "auto", loop: asyncio.AbstractEventLoop = None) -> GatewaySession:
-        sid = uuid.uuid4().hex[:16]
+    def _build(self, sid: str, transport: str, loop: asyncio.AbstractEventLoop,
+               history: Optional[list] = None,
+               created_at: Optional[float] = None,
+               last_activity: Optional[float] = None) -> GatewaySession:
+        """Construct a GatewaySession with its pipe/sink/agent, optionally
+        seeded with persisted history (hydration)."""
         loop = loop or asyncio.get_event_loop()
-        q: "_queue.Queue" = _queue.Queue()
-        buf: deque = deque(maxlen=MAX_BUFFER_EVENTS)
-        buf_lock = threading.Lock()
-        sink = ThreadQueueSink(q, buf, buf_lock)
-        # FuturePermission resolves via the session's pending-permissions map.
+        ep = pipe_mod.make_pipe(sid)
+        sink = PipeSink(ep)
         permission = FuturePermission(resolver=None, timeout=PERMISSION_TIMEOUT)
         agent = Session(transport=transport if transport in ("ws", "sse") else "ws",
                         sinks=[sink], permission=permission,
                         context=code.update_context({}, []))
+        if history:
+            agent.history = list(history)
+            # Seed the pipe with synthesized replay frames so a reconnecting
+            # client (WS last_seq=0) rebuilds the full conversation. If the
+            # pipe already has events (Redis stream still hot), skip seeding.
+            if ep.count() == 0:
+                frames = synthesize_frames(agent.history)
+                if frames:
+                    ep.seed(frames)
+                    agent._seq = frames[-1]["seq"]
+                else:
+                    agent._seq = 0
+            else:
+                agent._seq = ep.count()
         gs = GatewaySession(session_id=sid, transport=agent.transport,
-                            agent=agent, queue=q, buffer=buf, buffer_lock=buf_lock,
-                            loop=loop)
-        permission.resolver = gs._resolver  # bind now that the session exists
+                            agent=agent, pipe=ep, loop=loop,
+                            created_at=created_at or time.time(),
+                            last_activity=last_activity or time.time())
+        permission.resolver = gs._resolver
+        return gs
+
+    def create(self, transport: str = "auto", loop: asyncio.AbstractEventLoop = None,
+               sid: Optional[str] = None) -> GatewaySession:
+        """Create a new live session. If `sid` is given, hydrate from the DB
+        (used to revive a persisted session); otherwise mint a new id and row."""
+        if sid is None:
+            sid = uuid.uuid4().hex[:16]
+        loop = loop or asyncio.get_event_loop()
+        history = None
+        created_at = None
+        last_activity = None
+        row = db.load_session(sid) if sid else None
+        if row is not None:
+            history = row.get("history") or []
+            created_at = row.get("created_at")
+            last_activity = row.get("last_activity")
+        gs = self._build(sid, transport, loop, history, created_at, last_activity)
+        if row is None:
+            db.create_session_row(gs.session_id, gs.transport, gs.created_at, gs._title())
         with self._lock:
             self._sessions[sid] = gs
         return gs
@@ -180,6 +274,23 @@ class SessionManager:
     def get(self, sid: str) -> Optional[GatewaySession]:
         with self._lock:
             return self._sessions.get(sid)
+
+    def get_or_hydrate(self, sid: str, loop: asyncio.AbstractEventLoop = None) -> Optional[GatewaySession]:
+        """Return the live session for sid, hydrating from the DB if it exists
+        there but isn't currently in memory. None if neither."""
+        with self._lock:
+            gs = self._sessions.get(sid)
+        if gs is not None:
+            return gs
+        row = db.load_session(sid)
+        if row is None:
+            return None
+        gs = self._build(sid, row.get("transport") or "ws", loop,
+                         row.get("history") or [], row.get("created_at"),
+                         row.get("last_activity"))
+        with self._lock:
+            self._sessions[sid] = gs
+        return gs
 
     def all(self) -> list[GatewaySession]:
         with self._lock:

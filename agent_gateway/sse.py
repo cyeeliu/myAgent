@@ -12,7 +12,6 @@ interrupts) goes via the REST POST endpoints in main.py under the same session.
 from __future__ import annotations
 import asyncio
 import json
-import queue as _queue
 import time
 from typing import Optional
 
@@ -20,7 +19,6 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 
 HEARTBEAT_INTERVAL = 15.0
-POLL_INTERVAL = 0.05
 
 
 def _format_sse(frame: dict) -> str:
@@ -31,35 +29,32 @@ def _format_sse(frame: dict) -> str:
 
 
 async def _event_stream(gs, last_seq: int):
-    q = gs.queue
-    # Replay missed events from the buffer.
-    for frame in gs.snapshot_since(last_seq):
+    # Replay missed events from the pipe.
+    last = last_seq
+    for frame in gs.pipe.replay_since(last_seq):
         yield _format_sse(frame)
-        last_seq = max(last_seq, frame.get("seq", 0))
-    # Live drain (poll — no executor thread blocking on get).
+        last = max(last, frame.get("seq", 0))
+    # Live drain via the pipe.
     last_beat = time.monotonic()
-    while True:
-        try:
-            frame = q.get_nowait()
-        except _queue.Empty:
+    async for tick in gs.pipe.live(last):
+        if tick is None:
             if time.monotonic() - last_beat >= HEARTBEAT_INTERVAL:
                 yield ": ping\n\n"
                 last_beat = time.monotonic()
-                gs.last_activity = time.time()  # heartbeat keeps the session alive
-            await asyncio.sleep(POLL_INTERVAL)
+                gs.last_activity = time.time()
             continue
-        seq = frame.get("seq", 0)
-        if seq and seq <= last_seq:
-            continue  # already replayed
-        last_seq = max(last_seq, seq)
         gs.last_activity = time.time()
-        yield _format_sse(frame)
+        last_beat = time.monotonic()
+        yield _format_sse(tick)
+
 
 
 def register(app: FastAPI, manager):
     @app.get("/api/sessions/{sid}/events")
     async def sse_events(sid: str, request: Request):
-        gs = manager.get(sid)
+        import asyncio
+        loop = asyncio.get_running_loop()
+        gs = await asyncio.to_thread(manager.get_or_hydrate, sid, loop)
         if gs is None:
             raise HTTPException(status_code=404, detail="session not found")
         # Browser sends Last-Event-ID automatically on reconnect.

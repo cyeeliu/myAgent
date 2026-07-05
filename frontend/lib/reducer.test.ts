@@ -82,4 +82,17 @@ describe("reducer", () => {
     expect(s.items[1]).toMatchObject({ kind: "notice" });
     expect(s.items[2]).toMatchObject({ kind: "assistant", text: "continued" });
   });
+
+  it("user replay event renders a user bubble and resets curAssistant", () => {
+    // Hydrated sessions replay history as events; user messages arrive as
+    // kind:"user" frames. They must render as bubbles and not merge the next
+    // assistant turn into a prior bubble.
+    let s = initialState();
+    s = reduce(s, ev("user", { text: "hello" }, 1));
+    s = reduce(s, ev("token", { text: "hi" }, 2));
+    s = reduce(s, ev("done", {}, 3));
+    expect(s.items).toHaveLength(2);
+    expect(s.items[0]).toMatchObject({ kind: "user", text: "hello" });
+    expect(s.items[1]).toMatchObject({ kind: "assistant", text: "hi" });
+  });
 });

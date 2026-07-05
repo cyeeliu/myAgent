@@ -1,8 +1,36 @@
-# myAgent gateway(+core) + frontend (spec §10).
+# myAgent gateway(+core) + frontend + postgres (spec §10).
 # Usage:
 #   MODEL_ID=glm-5 OPENAI_API_KEY=sk-... docker compose up --build
 # The gateway reads .env at runtime via env_file; MODEL_ID is required.
+# Session history persists in the postgres volume across restarts.
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=myagent
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d myagent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   gateway:
     build:
       context: .
@@ -15,11 +43,18 @@ services:
       - MODEL_ID=${MODEL_ID:?MODEL_ID is required}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/myagent
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     # Agent state (.tasks/ .memory/ .transcripts/ …) lives in the container's
     # writable layer at /app (= WORKDIR = code.py's cwd). For persistence across
     # rebuilds, mount a named volume at /app/state and set the agent's WORKDIR
     # there — but then skills/ must also be reachable, so leave as-is for the
-    # teaching reference.
+    # teaching reference. Conversation history, however, now lives in postgres.
     restart: unless-stopped
 
   frontend:
@@ -33,3 +68,7 @@ services:
     depends_on:
       - gateway
     restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
