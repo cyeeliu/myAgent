@@ -51,10 +51,14 @@ export function useSessionManager(): SessionManager {
       if (cancelled) return;
 
       setSessions((prev) => {
-        // Backend is source of truth for which sessions exist; keep our
-        // ordering but drop ids the server no longer knows.
-        const liveIds = new Set(live.map((m) => m.session_id));
-        const kept = prev.filter((m) => liveIds.has(m.session_id));
+        // Backend is source of truth for session metadata (title, last_activity,
+        // history_len …) — merge its fields into kept entries so the sidebar
+        // reflects the auto-generated title after the first message, and drop
+        // ids the server no longer knows. Preserve our ordering for the rest.
+        const liveMap = new Map(live.map((m) => [m.session_id, m]));
+        const kept = prev
+          .filter((m) => liveMap.has(m.session_id))
+          .map((m) => ({ ...m, ...liveMap.get(m.session_id)! }));
         const seen = new Set(kept.map((m) => m.session_id));
         const merged = [...kept, ...live.filter((m) => !seen.has(m.session_id))];
         return merged;
