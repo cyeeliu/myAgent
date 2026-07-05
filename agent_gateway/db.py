@@ -32,8 +32,37 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at    DOUBLE PRECISION NOT NULL,
   last_activity DOUBLE PRECISION NOT NULL,
   title         TEXT NOT NULL,
-  history       JSONB NOT NULL DEFAULT '[]'
+  chat_record   JSONB NOT NULL DEFAULT '[]',
+  llm_context   JSONB NOT NULL DEFAULT '[]'
 );
+"""
+
+# Migration for pre-split databases: rename history → chat_record, add llm_context.
+_MIGRATION = """
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'sessions' AND column_name = 'history'
+  ) THEN
+    ALTER TABLE sessions RENAME COLUMN history TO chat_record;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'sessions' AND column_name = 'chat_record'
+  ) THEN
+    ALTER TABLE sessions ADD COLUMN chat_record JSONB NOT NULL DEFAULT '[]';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'sessions' AND column_name = 'llm_context'
+  ) THEN
+    ALTER TABLE sessions ADD COLUMN llm_context JSONB NOT NULL DEFAULT '[]';
+  END IF;
+  -- Backfill: old sessions had no llm_context; seed it from the full chat_record
+  -- so the first post-split turn has a working (uncompacted) context.
+  UPDATE sessions SET llm_context = chat_record WHERE llm_context = '[]'::jsonb;
+END $$;
 """
 
 
@@ -43,7 +72,15 @@ def _normalize(obj):
     dict/list/primitives so Jsonb can serialize the history."""
     from types import SimpleNamespace
     if isinstance(obj, SimpleNamespace):
-        return _normalize(vars(obj))
+        # vars() only sees instance attrs; _TextBlock/_ToolUseBlock set `type`
+        # as a CLASS attr, so merge the MRO's data attrs to keep it.
+        d = {}
+        for cls in type(obj).__mro__:
+            for k, v in getattr(cls, "__dict__", {}).items():
+                if not k.startswith("_") and not callable(v):
+                    d[k] = v
+        d.update(vars(obj))
+        return _normalize(d)
     if isinstance(obj, dict):
         return {k: _normalize(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -73,6 +110,7 @@ def init_pool(url: Optional[str]) -> None:
         _pool = ConnectionPool(url, min_size=1, max_size=8, open=True)
         with _pool.connection() as conn:
             conn.execute(SCHEMA)
+            conn.execute(_MIGRATION)
 
 
 def close_pool() -> None:
@@ -89,7 +127,8 @@ def _row_to_dict(row) -> dict:
         "created_at": row[2],
         "last_activity": row[3],
         "title": row[4],
-        "history": row[5],
+        "chat_record": row[5],
+        "llm_context": row[6],
     }
 
 
@@ -98,23 +137,35 @@ def create_session_row(sid: str, transport: str, created_at: float, title: str) 
         return
     with _pool.connection() as conn:
         conn.execute(
-            "INSERT INTO sessions (session_id, transport, created_at, last_activity, title, history) "
-            "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (session_id) DO NOTHING",
-            (sid, transport, created_at, created_at, title, Jsonb([])),
+            "INSERT INTO sessions (session_id, transport, created_at, last_activity, title, "
+            "chat_record, llm_context) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (session_id) DO NOTHING",
+            (sid, transport, created_at, created_at, title, Jsonb([]), Jsonb([])),
         )
 
 
-def save_history(sid: str, history: list, last_activity: float, title: str) -> None:
-    """Upsert the full history + metadata for a session (called at turn end)."""
+def save_chat_record(sid: str, record: list, last_activity: float, title: str) -> None:
+    """Upsert the append-only chat record (never compacted) + metadata."""
     if _pool is None:
         return
     with _pool.connection() as conn:
         conn.execute(
-            "INSERT INTO sessions (session_id, transport, created_at, last_activity, title, history) "
-            "VALUES (%s, '', %s, %s, %s, %s) "
+            "INSERT INTO sessions (session_id, transport, created_at, last_activity, title, "
+            "chat_record, llm_context) VALUES (%s, '', %s, %s, %s, %s, %s) "
             "ON CONFLICT (session_id) DO UPDATE SET last_activity = EXCLUDED.last_activity, "
-            "title = EXCLUDED.title, history = EXCLUDED.history",
-            (sid, last_activity, last_activity, title, Jsonb(_normalize(history))),
+            "title = EXCLUDED.title, chat_record = EXCLUDED.chat_record",
+            (sid, last_activity, last_activity, title, Jsonb(_normalize(record)), Jsonb([])),
+        )
+
+
+def save_llm_context(sid: str, context: list, last_activity: float) -> None:
+    """Upsert the compacted LLM context snapshot."""
+    if _pool is None:
+        return
+    with _pool.connection() as conn:
+        conn.execute(
+            "UPDATE sessions SET llm_context = %s, last_activity = %s WHERE session_id = %s",
+            (Jsonb(_normalize(context)), last_activity, sid),
         )
 
 
@@ -124,8 +175,8 @@ def load_session(sid: str) -> Optional[dict]:
         return None
     with _pool.connection() as conn:
         cur = conn.execute(
-            "SELECT session_id, transport, created_at, last_activity, title, history "
-            "FROM sessions WHERE session_id = %s",
+            "SELECT session_id, transport, created_at, last_activity, title, "
+            "chat_record, llm_context FROM sessions WHERE session_id = %s",
             (sid,),
         )
         row = cur.fetchone()
@@ -137,8 +188,8 @@ def list_session_rows() -> list[dict]:
         return []
     with _pool.connection() as conn:
         cur = conn.execute(
-            "SELECT session_id, transport, created_at, last_activity, title, history "
-            "FROM sessions ORDER BY last_activity DESC"
+            "SELECT session_id, transport, created_at, last_activity, title, "
+            "chat_record, llm_context FROM sessions ORDER BY last_activity DESC"
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 

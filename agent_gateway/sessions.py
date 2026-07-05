@@ -38,7 +38,7 @@ def _stringify(content: Any) -> str:
         parts = []
         for b in content:
             if isinstance(b, dict):
-                if b.get("type") == "text":
+                if code._block_type(b) == "text":
                     parts.append(b.get("text", ""))
                 elif "text" in b:
                     parts.append(b.get("text", ""))
@@ -46,13 +46,14 @@ def _stringify(content: Any) -> str:
     return str(content)
 
 
-def synthesize_frames(history: list) -> list[dict]:
-    """Rebuild replay frames from persisted history so a freshly hydrated
-    session can replay its full conversation. Returns frames with seq 1..N;
-    the caller seeds them into the pipe and advances agent._seq to N."""
+def synthesize_frames(record: list) -> list[dict]:
+    """Rebuild replay frames from the append-only chat record so a freshly
+    hydrated session can replay its FULL conversation. Returns frames with
+    seq 1..N; the caller seeds them into the live pipe and advances agent._seq
+    to N. Reads from `record` (never compacted), not the LLM context."""
     seq = 0
     frames: list[dict] = []
-    for msg in history:
+    for msg in record:
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
@@ -67,7 +68,7 @@ def synthesize_frames(history: list) -> list[dict]:
                 for b in content:
                     if not isinstance(b, dict):
                         continue
-                    if b.get("type") == "tool_result":
+                    if code._block_type(b) == "tool_result":
                         seq += 1
                         frames.append({"seq": seq, "kind": "tool_result",
                                        "payload": {"id": b.get("tool_use_id") or b.get("id"),
@@ -86,7 +87,7 @@ def synthesize_frames(history: list) -> list[dict]:
                         seq += 1
                         frames.append({"seq": seq, "kind": "token",
                                        "payload": {"text": b.get("text", ""), "seq": seq}})
-                    elif b.get("type") == "tool_use":
+                    elif code._block_type(b) == "tool_use":
                         seq += 1
                         frames.append({"seq": seq, "kind": "tool_start",
                                        "payload": {"id": b.get("id"), "name": b.get("name"),
@@ -106,12 +107,26 @@ class PipeSink(EventSink):
         self._pipe.publish(seq, kind, payload)
 
 
+class ChatRecordSink:
+    """Receives every append_both() call and writes it to chat:{sid} so the
+    durable, never-compacted chat record stream stays live for every turn —
+    not just user messages."""
+
+    def __init__(self, chat_pipe: pipe_mod.ChatStreamPipe):
+        self._pipe = chat_pipe
+
+    def append(self, msg: dict):
+        self._pipe.append(msg)
+
+
 @dataclass
 class GatewaySession:
     session_id: str
     transport: str                       # ws | sse (auto resolved by caller)
     agent: Session
-    pipe: pipe_mod.EventPipe
+    pipe: pipe_mod.EventPipe             # live:{sid} — token-level events for WS/SSE
+    chat_pipe: pipe_mod.ChatStreamPipe   # chat:{sid} — append-only message-level record
+    ctx_store: pipe_mod.ContextStore     # ctx:{sid}  — compacted LLM context snapshot
     loop: asyncio.AbstractEventLoop
     pending_permissions: dict[str, Future] = field(default_factory=dict)
     _perm_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -145,15 +160,17 @@ class GatewaySession:
             if self._worker is not None and self._worker.is_alive():
                 return False
             self.last_activity = time.time()
-            self.agent.history.append({"role": "user", "content": text})
+            user_msg = {"role": "user", "content": text}
+            # Append to the chat record (never compacted) AND the LLM context.
+            # append_both also fans out to record_sinks → chat:{sid} stream.
+            self.agent.append_both(user_msg)
             self.agent.interrupted = False
-            # Record the user message in the event pipe so a reconnecting client
-            # (WS last_seq=0 replay) rebuilds the user bubble. Without this the
-            # stream only has token/tool frames and user messages vanish on refresh.
+            # Record the user message in the live event pipe so a reconnecting
+            # client (WS last_seq=0 replay) rebuilds the user bubble.
             self.agent.emit("user", {"text": text})
-            # Persist the user message immediately so a mid-turn crash keeps it.
-            db.save_history(self.session_id, self.agent.history,
-                            self.last_activity, self._title())
+            # Persist the chat record immediately so a mid-turn crash keeps it.
+            db.save_chat_record(self.session_id, self.agent.record,
+                                self.last_activity, self._title())
             t = threading.Thread(target=self._run_turn, name=f"agent-{self.session_id}",
                                   daemon=True)
             self._worker = t
@@ -173,12 +190,20 @@ class GatewaySession:
             except Exception:
                 pass
         finally:
-            # Persist the full history at turn end (DB is the durable source).
+            # Persist both stores at turn end: the append-only chat record and
+            # the compacted LLM context snapshot. Redis ctx:{sid} mirrors the
+            # context for fast hydrate without recompacting.
+            now = time.time()
             try:
-                db.save_history(self.session_id, self.agent.history,
-                                time.time(), self._title())
+                db.save_chat_record(self.session_id, self.agent.record, now, self._title())
+                db.save_llm_context(self.session_id, self.agent.context_messages, now)
+                self.ctx_store.snapshot(self.agent.context_messages)
             except Exception:
                 pass  # persistence failure must not mask the turn result
+            # Clear the worker so the next post_message isn't rejected as
+            # "in flight" after the turn has ended.
+            with self._worker_lock:
+                self._worker = None
 
     def interrupt(self):
         self.agent.interrupted = True
@@ -186,8 +211,8 @@ class GatewaySession:
     # ── listing metadata ──
 
     def _title(self) -> str:
-        """Derive a short title from the first user message in history."""
-        for h in self.agent.history:
+        """Derive a short title from the first user message in the chat record."""
+        for h in self.agent.record:
             if not isinstance(h, dict) or h.get("role") != "user":
                 continue
             c = h.get("content")
@@ -208,7 +233,7 @@ class GatewaySession:
             "created_at": self.created_at,
             "last_activity": self.last_activity,
             "title": self._title(),
-            "history_len": len(self.agent.history),
+            "history_len": len(self.agent.record),
         }
 
 
@@ -218,26 +243,32 @@ class SessionManager:
         self._lock = threading.Lock()
 
     def _build(self, sid: str, transport: str, loop: asyncio.AbstractEventLoop,
-               history: Optional[list] = None,
+               chat_record: Optional[list] = None,
+               llm_context: Optional[list] = None,
                created_at: Optional[float] = None,
                last_activity: Optional[float] = None) -> GatewaySession:
-        """Construct a GatewaySession with its pipe/sink/agent, optionally
-        seeded with persisted history (hydration)."""
+        """Construct a GatewaySession with its pipes/sink/agent, optionally
+        seeded with persisted chat_record + llm_context (hydration)."""
         loop = loop or asyncio.get_event_loop()
-        ep = pipe_mod.make_pipe(sid)
+        ep = pipe_mod.make_pipe(sid)             # live:{sid} token events
+        chat_pipe = pipe_mod.make_chat_pipe(sid) # chat:{sid} message record
+        ctx_store = pipe_mod.make_ctx_store(sid) # ctx:{sid} context snapshot
         sink = PipeSink(ep)
         permission = FuturePermission(resolver=None, timeout=PERMISSION_TIMEOUT)
         agent = Session(transport=transport if transport in ("ws", "sse") else "ws",
                         sinks=[sink], permission=permission,
                         context=code.update_context({}, []))
+        agent.record_sinks = [ChatRecordSink(chat_pipe)]
         agent.workdir = code.REPO_ROOT / "workspace" / sid
-        if history:
-            agent.history = list(history)
-            # Seed the pipe with synthesized replay frames so a reconnecting
-            # client (WS last_seq=0) rebuilds the full conversation. If the
-            # pipe already has events (Redis stream still hot), skip seeding.
+        if chat_record:
+            agent.record = list(chat_record)
+            # llm_context may be missing on old/half-migrated rows; derive from
+            # the full record (uncompacted) so the first turn has a working context.
+            agent.context_messages = list(llm_context) if llm_context else list(chat_record)
+            # Re-seed the live pipe with synthesized replay frames so a
+            # reconnecting client (WS last_seq=0) rebuilds the full conversation.
             if ep.count() == 0:
-                frames = synthesize_frames(agent.history)
+                frames = synthesize_frames(agent.record)
                 if frames:
                     ep.seed(frames)
                     agent._seq = frames[-1]["seq"]
@@ -245,8 +276,12 @@ class SessionManager:
                     agent._seq = 0
             else:
                 agent._seq = ep.count()
+            # Re-seed the chat stream too if it expired (Redis lost the hot record).
+            if chat_pipe.count() == 0:
+                chat_pipe.seed(agent.record)
         gs = GatewaySession(session_id=sid, transport=agent.transport,
-                            agent=agent, pipe=ep, loop=loop,
+                            agent=agent, pipe=ep, chat_pipe=chat_pipe,
+                            ctx_store=ctx_store, loop=loop,
                             created_at=created_at or time.time(),
                             last_activity=last_activity or time.time())
         permission.resolver = gs._resolver
@@ -259,15 +294,18 @@ class SessionManager:
         if sid is None:
             sid = uuid.uuid4().hex[:16]
         loop = loop or asyncio.get_event_loop()
-        history = None
+        chat_record = None
+        llm_context = None
         created_at = None
         last_activity = None
         row = db.load_session(sid) if sid else None
         if row is not None:
-            history = row.get("history") or []
+            chat_record = row.get("chat_record") or []
+            llm_context = row.get("llm_context") or []
             created_at = row.get("created_at")
             last_activity = row.get("last_activity")
-        gs = self._build(sid, transport, loop, history, created_at, last_activity)
+        gs = self._build(sid, transport, loop, chat_record, llm_context,
+                         created_at, last_activity)
         if row is None:
             db.create_session_row(gs.session_id, gs.transport, gs.created_at, gs._title())
         with self._lock:
@@ -289,8 +327,8 @@ class SessionManager:
         if row is None:
             return None
         gs = self._build(sid, row.get("transport") or "ws", loop,
-                         row.get("history") or [], row.get("created_at"),
-                         row.get("last_activity"))
+                         row.get("chat_record") or [], row.get("llm_context") or [],
+                         row.get("created_at"), row.get("last_activity"))
         with self._lock:
             self._sessions[sid] = gs
         return gs

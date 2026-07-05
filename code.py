@@ -93,7 +93,18 @@ def _block_attr(block, name, default=None):
 
 
 def _block_type(block):
-    return _block_attr(block, "type")
+    t = _block_attr(block, "type")
+    if t:
+        return t
+    # Infer from shape — blocks hydrated from older DB saves may lack `type`
+    # (it was a class attr on _TextBlock/_ToolUseBlock and got dropped by JSON).
+    if _block_attr(block, "tool_use_id") is not None:
+        return "tool_result"
+    if _block_attr(block, "name") is not None and _block_attr(block, "input") is not None:
+        return "tool_use"
+    if _block_attr(block, "text") is not None:
+        return "text"
+    return None
 
 
 def _to_openai_messages(system, messages) -> list[dict]:
@@ -129,7 +140,9 @@ def _to_openai_messages(system, messages) -> list[dict]:
                 texts, tool_calls = [], []
                 for b in content:
                     if _block_type(b) == "text":
-                        texts.append(_block_attr(b, "text", ""))
+                        t = _block_attr(b, "text", "")
+                        if t:
+                            texts.append(t)
                     elif _block_type(b) == "tool_use":
                         tool_calls.append({
                             "id": _block_attr(b, "id"),
@@ -139,12 +152,61 @@ def _to_openai_messages(system, messages) -> list[dict]:
                                 "arguments": json.dumps(_block_attr(b, "input", {})),
                             },
                         })
-                out.append({"role": "assistant",
-                            "content": "\n".join(texts) if texts else None,
-                            **({"tool_calls": tool_calls} if tool_calls else {})})
+                # An assistant turn with neither text nor tool_use (empty content
+                # list — a bare stop, or a compaction artifact) is invalid to send
+                # to the API: ModelArts.81001 / OpenAI 400 "assistant must have
+                # content or tool_calls". Drop it. When tool_calls are present
+                # but no text, omit content rather than sending null — some strict
+                # backends reject content=null even alongside tool_calls.
+                if not texts and not tool_calls:
+                    continue
+                msg_out = {"role": "assistant"}
+                if texts:
+                    msg_out["content"] = "\n".join(texts)
+                if tool_calls:
+                    msg_out["tool_calls"] = tool_calls
+                out.append(msg_out)
         elif role == "tool":
             out.append(msg)
-    return out
+    # ── Enforce tool/tool_call consistency ──
+    # Compaction (snip_compact/micro_compact/tool_result_budget) can drop an
+    # assistant turn but keep its subsequent tool_result, orphaning it. The
+    # OpenAI-compatible API rejects a `role=tool` message whose tool_call_id
+    # has no preceding assistant tool_call (ModelArts.81001 / OpenAI 400
+    # "tool must be a response to a preceding message with tool_calls").
+    # Symmetrically, an assistant tool_call with no following tool result is
+    # also invalid. Repair both: drop orphaned tool results, then strip any
+    # assistant tool_calls that lost their results.
+    declared_ids = set()
+    for m in out:
+        if m.get("role") == "assistant" and "tool_calls" in m:
+            for tc in m["tool_calls"]:
+                declared_ids.add(tc.get("id"))
+    kept = []
+    for m in out:
+        if m.get("role") == "tool":
+            if m.get("tool_call_id") in declared_ids:
+                kept.append(m)
+        else:
+            kept.append(m)
+    answered_ids = {m["tool_call_id"] for m in kept if m.get("role") == "tool"}
+    final = []
+    for m in kept:
+        if m.get("role") == "assistant" and "tool_calls" in m:
+            live = [tc for tc in m["tool_calls"] if tc.get("id") in answered_ids]
+            if live:
+                m2 = {"role": "assistant"}
+                if "content" in m:
+                    m2["content"] = m["content"]
+                m2["tool_calls"] = live
+                final.append(m2)
+            elif "content" in m:
+                # tool_calls all orphaned — keep the text part only
+                final.append({"role": "assistant", "content": m["content"]})
+            # else: drop the assistant entirely
+        else:
+            final.append(m)
+    return final
 
 
 def _to_openai_tools(tools) -> list[dict] | None:
@@ -167,8 +229,9 @@ def chat_create(model, system=None, messages=None, tools=None,
     tool_call fragments are reassembled; the returned shape is identical. When
     stream=False (CLI path), a single non-streaming call is made — preserving
     the original CLI behavior."""
+    oai_msgs = _to_openai_messages(system, messages or [])
     kwargs = {"model": model,
-              "messages": _to_openai_messages(system, messages or []),
+              "messages": oai_msgs,
               "max_tokens": max_tokens}
     oai_tools = _to_openai_tools(tools)
     if oai_tools:
@@ -382,14 +445,17 @@ class FuturePermission(Permission):
 class Session:
     """Per-conversation state lifted out of module globals.
 
-    Holds the message history, context, todo nudge counter, a per-session lock,
-    the transport label, the event sinks (fan-out), and the permission object.
-    `emit` stamps a monotonic seq on every event and fans out to all sinks.
+    Holds the chat record + LLM context (split so compaction can never destroy
+    the durable conversation), side context, todo nudge counter, a per-session
+    lock, the transport label, the event sinks (fan-out), and the permission
+    object. `emit` stamps a monotonic seq on every event and fans out to all sinks.
     """
-    history: list = field(default_factory=list)
+    record: list = field(default_factory=list)             # append-only chat record; NEVER compacted
+    context_messages: list = field(default_factory=list)   # compactable LLM input context
     context: dict = field(default_factory=dict)
     transport: str = "cli"           # cli | ws | sse
     sinks: list = field(default_factory=list)
+    record_sinks: list = field(default_factory=list)  # chat-record append hooks (e.g. chat:{sid} stream)
     permission: Permission = None
     lock: threading.RLock = field(default_factory=threading.RLock)
     rounds_since_todo: int = 0
@@ -397,6 +463,20 @@ class Session:
     workdir: object = None        # per-session WORKDIR (workspace/<sid>/); set by gateway
     mcp_clients: dict = field(default_factory=dict)  # per-session MCP connections
     _seq: int = 0
+
+    def append_both(self, msg: dict) -> None:
+        """Append a message to the chat record (never compacted) AND the LLM
+        context (compactable). Every turn-level append goes through here so the
+        durable record and the working context stay in sync until compaction
+        trims the context. Also fans out to record_sinks (e.g. the Redis
+        chat:{sid} stream) so the durable chat record is populated live."""
+        self.record.append(msg)
+        self.context_messages.append(msg)
+        for sink in self.record_sinks:
+            try:
+                sink.append(msg)
+            except Exception:
+                pass
 
     def emit(self, kind: str, payload: dict = None):
         if payload is None:
@@ -2446,10 +2526,10 @@ def build_user_content(results: list[dict]) -> list[dict]:
     return content
 
 
-def inject_background_notifications(messages: list):
+def inject_background_notifications(session: Session):
     notes = collect_background_results()
     if notes:
-        messages.append({"role": "user", "content": [
+        session.append_both({"role": "user", "content": [
             {"type": "text", "text": note} for note in notes]})
 
 
@@ -2470,7 +2550,7 @@ def call_llm(messages: list, context: dict, tools: list,
 
 def agent_loop(session: Session):
     set_current_session(session)
-    messages = session.history
+    messages = session.context_messages   # compactable LLM context (compaction mutates this only)
     context = session.context
     tools, handlers = assemble_tool_pool()
     state = RecoveryState()
@@ -2484,15 +2564,15 @@ def agent_loop(session: Session):
             return
         fired = consume_cron_queue()
         for job in fired:
-            messages.append({"role": "user",
-                             "content": f"[Scheduled] {job.prompt}"})
+            session.append_both({"role": "user",
+                                 "content": f"[Scheduled] {job.prompt}"})
             session.emit("text", {"text": f"  \033[35m[cron inject] {job.prompt[:60]}\033[0m"})
 
-        inject_background_notifications(messages)
+        inject_background_notifications(session)
 
         if session.rounds_since_todo >= 3:
-            messages.append({"role": "user",
-                             "content": "<reminder>Update your todos.</reminder>"})
+            session.append_both({"role": "user",
+                                 "content": "<reminder>Update your todos.</reminder>"})
             session.rounds_since_todo = 0
 
         prepare_context(messages)
@@ -2509,8 +2589,17 @@ def agent_loop(session: Session):
                 state.has_attempted_reactive_compact = True
                 session.emit("compacted", {"reason": "reactive_compact"})
                 continue
-            messages.append({"role": "assistant", "content": [
+            session.append_both({"role": "assistant", "content": [
                 {"type": "text", "text": f"[Error] {type(e).__name__}: {e}"}]})
+            # Surface LLM/API failures in the gateway stdout (otherwise they only
+            # travel as an error event on the WS and are invisible in docker logs).
+            try:
+                import traceback as _tb
+                print(f"[agent_loop] LLM call failed: {type(e).__name__}: {e}",
+                      file=sys.stderr)
+                _tb.print_exc(file=sys.stderr)
+            except Exception:
+                pass
             session.emit("error", {"error": f"{type(e).__name__}: {e}"})
             session.emit("done", {})
             return
@@ -2529,9 +2618,9 @@ def agent_loop(session: Session):
                 session.emit("text",
                              {"text": f"  \033[33m[max_tokens] retry with {max_tokens}\033[0m"})
                 continue
-            messages.append({"role": "assistant", "content": response.content})
+            session.append_both({"role": "assistant", "content": response.content})
             if state.recovery_count < MAX_RECOVERY_RETRIES:
-                messages.append({"role": "user", "content": CONTINUATION_PROMPT})
+                session.append_both({"role": "user", "content": CONTINUATION_PROMPT})
                 state.recovery_count += 1
                 continue
             session.emit("done", {})
@@ -2539,7 +2628,7 @@ def agent_loop(session: Session):
 
         max_tokens = DEFAULT_MAX_TOKENS
         state.has_escalated = False
-        messages.append({"role": "assistant", "content": response.content})
+        session.append_both({"role": "assistant", "content": response.content})
         if not has_tool_use(response.content):
             trigger_hooks("Stop", messages)
             session.emit("done", {})
@@ -2555,8 +2644,8 @@ def agent_loop(session: Session):
 
             if block.name == "compact":
                 messages[:] = compact_history(messages)
-                messages.append({"role": "user",
-                                 "content": "[Compacted. Continue with summarized context.]"})
+                session.append_both({"role": "user",
+                                     "content": "[Compacted. Continue with summarized context.]"})
                 session.emit("compacted", {"reason": "explicit"})
                 compacted_now = True
                 break
@@ -2605,7 +2694,7 @@ def agent_loop(session: Session):
         if compacted_now:
             continue
 
-        messages.append({"role": "user", "content": build_user_content(results)})
+        session.append_both({"role": "user", "content": build_user_content(results)})
 
 
 def print_turn_assistants(messages: list, turn_start: int):
@@ -2624,17 +2713,17 @@ def cron_autorun_loop(session: Session):
         if not fired:
             continue
         with session.lock:
-            turn_start = len(session.history)
+            turn_start = len(session.record)
             for job in fired:
-                session.history.append({"role": "user",
-                                        "content": f"[Scheduled] {job.prompt}"})
+                session.append_both({"role": "user",
+                                     "content": f"[Scheduled] {job.prompt}"})
                 if session.transport == "cli":
                     terminal_print(
                         f"  \033[35m[cron auto] {job.prompt[:60]}\033[0m")
             agent_loop(session)
-            session.context.update(update_context(session.context, session.history))
+            session.context.update(update_context(session.context, session.record))
             if session.transport == "cli":
-                print_turn_assistants(session.history, turn_start)
+                print_turn_assistants(session.record, turn_start)
 
 
 if __name__ == "__main__":
@@ -2655,12 +2744,12 @@ if __name__ == "__main__":
         if query.strip().lower() in ("q", "exit", ""):
             break
         trigger_hooks("UserPromptSubmit", query)
-        turn_start = len(session.history)
-        session.history.append({"role": "user", "content": query})
+        turn_start = len(session.record)
+        session.append_both({"role": "user", "content": query})
         with session.lock:
             agent_loop(session)
-            session.context = update_context(session.context, session.history)
-            print_turn_assistants(session.history, turn_start)
+            session.context = update_context(session.context, session.record)
+            print_turn_assistants(session.record, turn_start)
 
         inbox = consume_lead_inbox(route_protocol=True)
         if inbox:
@@ -2672,6 +2761,6 @@ if __name__ == "__main__":
             inbox_text = "\n".join(
                 f"From {m['from']} [{inbox_label(m)}]: "
                 f"{m['content'][:200]}" for m in inbox)
-            session.history.append({"role": "user",
-                                    "content": f"[Inbox]\n{inbox_text}"})
+            session.append_both({"role": "user",
+                                 "content": f"[Inbox]\n{inbox_text}"})
         print()

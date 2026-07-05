@@ -100,7 +100,7 @@ async def session_status(sid: str):
         "last_seq": gs.agent._seq,
         "buffered": gs.pipe.count(),
         "worker_alive": gs._worker is not None and gs._worker.is_alive(),
-        "history_len": len(gs.agent.history),
+        "history_len": len(gs.agent.record),
     }
 
 @app.get("/api/sessions")
@@ -117,7 +117,7 @@ async def list_sessions():
             "created_at": r["created_at"],
             "last_activity": r["last_activity"],
             "title": r["title"],
-            "history_len": len(r.get("history") or []),
+            "history_len": len(r.get("chat_record") or []),
         }
     for gs in manager.all():
         by_sid[gs.session_id] = gs.meta()  # live is at least as fresh

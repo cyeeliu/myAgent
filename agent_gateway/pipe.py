@@ -168,3 +168,117 @@ def make_pipe(sid: str) -> EventPipe:
     if redis_enabled():
         return RedisStreamPipe(sid)
     return InMemoryPipe()
+
+
+# ── Chat record (append-only, message-level) ──
+# Separate from the live event pipe: this holds the durable, NEVER-compacted
+# conversation (one entry per user/assistant/tool_result message). Replayed to
+# rebuild the full conversation when the live token stream has expired.
+
+class ChatStreamPipe:
+    """chat:{sid} — append-only message-level chat record."""
+
+    def append(self, msg: dict) -> None: ...
+    def replay(self) -> list[dict]: ...
+    def seed(self, messages: list[dict]) -> None: ...
+    def count(self) -> int: ...
+
+
+class InMemoryChatPipe(ChatStreamPipe):
+    def __init__(self):
+        self._msgs: list = []
+        self._lock = threading.Lock()
+
+    def append(self, msg: dict) -> None:
+        with self._lock:
+            self._msgs.append(msg)
+
+    def replay(self) -> list[dict]:
+        with self._lock:
+            return list(self._msgs)
+
+    def seed(self, messages: list[dict]) -> None:
+        with self._lock:
+            self._msgs = list(messages)
+
+    def count(self) -> int:
+        with self._lock:
+            return len(self._msgs)
+
+
+class RedisChatPipe(ChatStreamPipe):
+    """Redis Stream chat:{sid}. Auto IDs (*); field `msg` = JSON message."""
+
+    def __init__(self, sid: str):
+        self._key = f"chat:{sid}"
+
+    def append(self, msg: dict) -> None:
+        _sync_r.xadd(self._key, {"msg": json.dumps(msg, default=str)})
+        _sync_r.expire(self._key, STREAM_TTL)
+
+    def replay(self) -> list[dict]:
+        return [json.loads(fields["msg"]) for _id, fields in _sync_r.xrange(self._key)]
+
+    def seed(self, messages: list[dict]) -> None:
+        if not messages:
+            return
+        pipe = _sync_r.pipeline()
+        for m in messages:
+            pipe.xadd(self._key, {"msg": json.dumps(m, default=str)})
+        pipe.expire(self._key, STREAM_TTL)
+        pipe.execute()
+
+    def count(self) -> int:
+        return _sync_r.xlen(self._key)
+
+
+def make_chat_pipe(sid: str) -> ChatStreamPipe:
+    if redis_enabled():
+        return RedisChatPipe(sid)
+    return InMemoryChatPipe()
+
+
+# ── LLM context snapshot (compacted, overwriting) ──
+
+class ContextStore:
+    """ctx:{sid} — JSON snapshot of the compacted LLM context."""
+
+    def snapshot(self, messages: list) -> None: ...
+    def load(self) -> Optional[list]: ...
+
+
+class InMemoryContextStore(ContextStore):
+    def __init__(self):
+        self._data: Optional[list] = None
+
+    def snapshot(self, messages: list) -> None:
+        self._data = list(messages)
+
+    def load(self) -> Optional[list]:
+        return list(self._data) if self._data is not None else None
+
+
+class RedisContextStore(ContextStore):
+    """Redis Hash ctx:{sid} field `messages` = JSON list."""
+
+    def __init__(self, sid: str):
+        self._key = f"ctx:{sid}"
+
+    def snapshot(self, messages: list) -> None:
+        _sync_r.hset(self._key, "messages", json.dumps(messages, default=str))
+        _sync_r.expire(self._key, STREAM_TTL)
+
+    def load(self) -> Optional[list]:
+        raw = _sync_r.hget(self._key, "messages")
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+
+def make_ctx_store(sid: str) -> ContextStore:
+    if redis_enabled():
+        return RedisContextStore(sid)
+    return InMemoryContextStore()
