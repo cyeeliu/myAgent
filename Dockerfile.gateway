@@ -1,11 +1,22 @@
 # Gateway + core. Runs uvicorn serving agent_gateway.main:app.
 # The agent's WORKDIR is /app (set below) so skills/ and dot-dirs live there.
+FROM node:20-slim AS nodebase
+
 FROM python:3.12-slim
 
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+
+# node + npm/npx copied from the local node:20-slim image (no network at build).
+# Lets the agent spawn npx-based MCP servers (gsearch, filesystem, …) via
+# connect_mcp(command="npx", args=["-y", "<pkg>", ...]). npx downloads packages
+# at runtime (container has egress).
+COPY --from=nodebase /usr/local/bin/node /usr/local/bin/node
+COPY --from=nodebase /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN printf '#!/bin/sh\nexec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js "$@"\n' > /usr/local/bin/npm && chmod +x /usr/local/bin/npm \
+ && printf '#!/bin/sh\nexec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npx-cli.js "$@"\n' > /usr/local/bin/npx && chmod +x /usr/local/bin/npx
 
 # core + gateway package + skills (skills are prompts the agent reads at runtime)
 COPY code.py /app/code.py

@@ -395,6 +395,7 @@ class Session:
     rounds_since_todo: int = 0
     interrupted: bool = False
     workdir: object = None        # per-session WORKDIR (workspace/<sid>/); set by gateway
+    mcp_clients: dict = field(default_factory=dict)  # per-session MCP connections
     _seq: int = 0
 
     def emit(self, kind: str, payload: dict = None):
@@ -715,7 +716,7 @@ def assemble_system_prompt(context: dict) -> str:
                     "\nUse load_skill(name) when a skill is relevant.")
     if context.get("memories"):
         sections.append(f"Relevant memories:\n{context['memories']}")
-    mcp_names = list(mcp_clients.keys())
+    mcp_names = list(_mcp_clients().keys())
     if mcp_names:
         sections.append(f"Connected MCP servers: {', '.join(mcp_names)}")
     return "\n\n".join(sections)
@@ -1895,29 +1896,154 @@ threading.Thread(target=cron_scheduler_loop, daemon=True).start()
 # MCP is modeled as late-bound tools: connect first, then discovered server
 # tools are merged into the normal tool pool with mcp__server__tool names.
 class MCPClient:
-    """Discovers and calls tools on an MCP server (mock for teaching)."""
+    """MCP client. Real transport = JSON-RPC 2.0 over a subprocess's stdio
+    (the standard MCP stdio transport). Mock servers register() in-process
+    handlers for the teaching demo. call_tool dispatches to whichever is active.
+    """
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, command: str = None, args: list = None,
+                 env: dict = None, cwd: str = None):
         self.name = name
         self.tools: list[dict] = []
         self._handlers: dict[str, callable] = {}
+        self._proc = None
+        self._req_id = 0
+        self._err = None
+        if command:
+            self._spawn(command, args or [], env or {}, cwd)
 
-    def register(self, tool_defs: list[dict],
-                 handlers: dict[str, callable]):
+    def _spawn(self, command, args, env, cwd):
+        full_env = dict(os.environ)
+        full_env.update({str(k): str(v) for k, v in env.items()})
+        try:
+            self._proc = subprocess.Popen(
+                [command] + [str(a) for a in args],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, env=full_env,
+                cwd=cwd or str(workdir()), text=True, bufsize=1)
+        except FileNotFoundError as e:
+            self._err = f"command not found: {command} ({e})"
+            raise
+        # MCP handshake: initialize → notifications/initialized → tools/list
+        self._request("initialize", {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "myAgent", "version": "1.0"},
+        })
+        self._notify("notifications/initialized", {})
+        tl = self._request("tools/list", {})
+        self.tools = [
+            {"name": t["name"], "description": t.get("description", ""),
+             "inputSchema": t.get("inputSchema", {"type": "object"})}
+            for t in (tl or {}).get("tools", [])
+        ]
+
+    def _request(self, method, params):
+        if self._proc is None:
+            raise RuntimeError(f"MCP server {self.name} has no process")
+        self._req_id += 1
+        rid = self._req_id
+        msg = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
+        self._proc.stdin.write(json.dumps(msg) + "\n")
+        self._proc.stdin.flush()
+        while True:
+            line = self._proc.stdout.readline()
+            if not line:
+                raise RuntimeError(f"MCP server {self.name} closed stdout")
+            try:
+                resp = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # server printed a non-JSON line; skip
+            if resp.get("id") == rid:
+                if "error" in resp:
+                    raise RuntimeError(f"MCP error from {self.name}: {resp['error']}")
+                return resp.get("result", {})
+            # notification or unrelated response — ignore
+
+    def _notify(self, method, params):
+        msg = {"jsonrpc": "2.0", "method": method, "params": params}
+        self._proc.stdin.write(json.dumps(msg) + "\n")
+        self._proc.stdin.flush()
+
+    def register(self, tool_defs: list[dict], handlers: dict[str, callable]):
+        """In-process mock registration (teaching demo / fallback)."""
         self.tools = tool_defs
         self._handlers = handlers
 
     def call_tool(self, tool_name: str, args: dict) -> str:
+        if self._proc is not None:
+            try:
+                res = self._request("tools/call",
+                                    {"name": tool_name, "arguments": args or {}})
+            except Exception as e:
+                return f"MCP error calling {self.name}.{tool_name}: {e}"
+            content = (res or {}).get("content", [])
+            parts = []
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text":
+                    parts.append(b.get("text", ""))
+                elif b.get("type") == "image":
+                    parts.append("[image omitted]")
+                elif b.get("type") == "error":
+                    parts.append(f"[error] {b.get('text', '')}")
+            return "\n".join(parts) if parts else json.dumps(res)
         handler = self._handlers.get(tool_name)
         if not handler:
             return f"MCP error: unknown tool '{tool_name}'"
         try:
-            return handler(**args)
+            return handler(**(args or {}))
         except Exception as e:
             return f"MCP error: {e}"
 
+    def close(self):
+        if self._proc is not None:
+            try:
+                self._proc.stdin.close()
+                self._proc.terminate()
+                self._proc.wait(timeout=2)
+            except Exception:
+                pass
+            self._proc = None
 
-mcp_clients: dict[str, MCPClient] = {}
+
+mcp_clients: dict[str, MCPClient] = {}  # CLI fallback; sessions use Session.mcp_clients
+
+_session_local = threading.local()
+
+
+def set_current_session(session) -> None:
+    """Bind the running agent's session to the current thread so tool handlers
+    (which only receive **args) can reach per-session state like MCP clients."""
+    _session_local.current = session
+
+
+def get_current_session():
+    return getattr(_session_local, "current", None)
+
+
+def _mcp_clients() -> dict:
+    """MCP clients for the current session (per-session isolation), falling back
+    to the module-level dict in CLI mode."""
+    s = get_current_session()
+    if s is not None and getattr(s, "mcp_clients", None) is not None:
+        return s.mcp_clients
+    return mcp_clients
+
+
+def _load_mcp_config() -> dict:
+    """Load server definitions from mcp.json (workdir first, then REPO_ROOT).
+    Schema: {"servers": {"name": {"command": "...", "args": [...], "env": {...}}}}."""
+    import json as _j
+    for base in (workdir(), REPO_ROOT):
+        f = base / "mcp.json"
+        if f.exists():
+            try:
+                return _j.loads(f.read_text()).get("servers", {}) or {}
+            except Exception:
+                pass
+    return {}
 
 _DISALLOWED_CHARS = re.compile(r'[^a-zA-Z0-9_-]')
 
@@ -1973,26 +2099,42 @@ MOCK_SERVERS = {
 }
 
 
-def connect_mcp(name: str) -> str:
-    if name in mcp_clients:
+def connect_mcp(name: str, command: str = None, args: list = None,
+                 env: dict = None) -> str:
+    """Connect an MCP server. Real transport when command/args given or when
+    `name` is found in mcp.json; mock fallback for the built-in demo servers."""
+    clients = _mcp_clients()
+    if name in clients:
         return f"MCP server '{name}' already connected"
-    factory = MOCK_SERVERS.get(name)
-    if not factory:
-        available = ", ".join(MOCK_SERVERS.keys())
-        return f"Unknown server '{name}'. Available: {available}"
-    mcp_client = factory()
-    mcp_clients[name] = mcp_client
-    tool_names = [t["name"] for t in mcp_client.tools]
+    cwd = str(workdir())
+    cfg = _load_mcp_config().get(name) if not command else None
+    try:
+        if command:
+            client = MCPClient(name, command=command, args=args, env=env, cwd=cwd)
+        elif cfg:
+            client = MCPClient(name, command=cfg.get("command"),
+                               args=cfg.get("args"), env=cfg.get("env"), cwd=cwd)
+        else:
+            factory = MOCK_SERVERS.get(name)
+            if not factory:
+                avail = ", ".join(list(_load_mcp_config().keys()) + list(MOCK_SERVERS.keys()))
+                return (f"Unknown server '{name}'. Provide command+args, add it to "
+                        f"mcp.json, or use a mock name. Known: {avail}")
+            client = factory()
+    except Exception as e:
+        return f"Failed to connect MCP server '{name}': {type(e).__name__}: {e}"
+    clients[name] = client
+    tool_names = [t["name"] for t in client.tools]
     print(f"  \033[31m[mcp] connected: {name} → {tool_names}\033[0m")
     return (f"Connected to MCP server '{name}'. "
-            f"Discovered {len(mcp_client.tools)} tools: {', '.join(tool_names)}")
+            f"Discovered {len(client.tools)} tools: {', '.join(tool_names)}")
 
 
 def assemble_tool_pool() -> tuple[list[dict], dict]:
     """Merge builtin tools + all MCP tools into one pool."""
     tools = list(BUILTIN_TOOLS)
     handlers = dict(BUILTIN_HANDLERS)
-    for server_name, mcp_client in mcp_clients.items():
+    for server_name, mcp_client in _mcp_clients().items():
         safe_server = normalize_mcp_name(server_name)
         for tool_def in mcp_client.tools:
             safe_tool = normalize_mcp_name(tool_def["name"])
@@ -2076,8 +2218,9 @@ def run_check_inbox() -> str:
         lines.append(f"  [{m['from']}]{tag} {m['content'][:200]}")
     return "\n".join(lines)
 
-def run_connect_mcp(name: str) -> str:
-    return connect_mcp(name)
+def run_connect_mcp(name: str, command: str = None,
+                     args: list = None, env: dict = None) -> str:
+    return connect_mcp(name, command=command, args=args, env=env)
 
 
 # ── Tool Definitions ──
@@ -2222,9 +2365,17 @@ BUILTIN_TOOLS = [
                       "properties": {"name": {"type": "string"}},
                       "required": ["name"]}},
     {"name": "connect_mcp",
-     "description": "Connect to an MCP server (docs, deploy) and discover tools.",
+     "description": "Connect to an MCP server and discover its tools. Give a "
+                    "command+args for a stdio server, or a name defined in "
+                    "mcp.json, or a built-in mock name (docs, deploy). "
+                    "Discovered tools become callable as mcp__<server>__<tool>.",
      "input_schema": {"type": "object",
-                      "properties": {"name": {"type": "string"}},
+                      "properties": {
+                          "name": {"type": "string", "description": "server name to register it under"},
+                          "command": {"type": "string", "description": "executable to run (stdio transport). Omit to use mcp.json or a mock name."},
+                          "args": {"type": "array", "items": {"type": "string"}},
+                          "env": {"type": "object", "additionalProperties": {"type": "string"}}
+                      },
                       "required": ["name"]}},
 ]
 
@@ -2266,7 +2417,7 @@ def update_context(context: dict, messages: list) -> dict:
         memories = _memory_index().read_text()[:2000]
     return {
         "memories": memories,
-        "connected_mcp": list(mcp_clients.keys()),
+        "connected_mcp": list(_mcp_clients().keys()),
         "active_teammates": list(active_teammates.keys()),
     }
 
@@ -2318,6 +2469,7 @@ def call_llm(messages: list, context: dict, tools: list,
 
 
 def agent_loop(session: Session):
+    set_current_session(session)
     messages = session.history
     context = session.context
     tools, handlers = assemble_tool_pool()
