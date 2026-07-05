@@ -93,6 +93,7 @@ class GatewaySession:
         with self._worker_lock:
             if self._worker is not None and self._worker.is_alive():
                 return False
+            self.last_activity = __import__("time").time()
             self.agent.history.append({"role": "user", "content": text})
             self.agent.interrupted = False
             t = threading.Thread(target=self._run_turn, name=f"agent-{self.session_id}",

@@ -45,12 +45,14 @@ async def _event_stream(gs, last_seq: int):
             if time.monotonic() - last_beat >= HEARTBEAT_INTERVAL:
                 yield ": ping\n\n"
                 last_beat = time.monotonic()
+                gs.last_activity = time.time()  # heartbeat keeps the session alive
             await asyncio.sleep(POLL_INTERVAL)
             continue
         seq = frame.get("seq", 0)
         if seq and seq <= last_seq:
             continue  # already replayed
         last_seq = max(last_seq, seq)
+        gs.last_activity = time.time()
         yield _format_sse(frame)
 
 

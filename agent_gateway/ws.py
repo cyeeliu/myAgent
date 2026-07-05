@@ -33,6 +33,7 @@ async def _sender(ws: WebSocket, session, last_seq: int):
                 await ws.send_json({"seq": 0, "kind": "ping",
                                     "payload": {"t": time.time()}})
                 last_beat = time.monotonic()
+                session.last_activity = time.time()  # heartbeat keeps the session alive
             await asyncio.sleep(POLL_INTERVAL)
             continue
         seq = frame.get("seq", 0)
@@ -40,12 +41,14 @@ async def _sender(ws: WebSocket, session, last_seq: int):
             continue  # already replayed from buffer; skip
         last_seq = max(last_seq, seq)
         await ws.send_json(frame)
+        session.last_activity = time.time()
 
 
 async def _receiver(ws: WebSocket, session):
     """Handle client → server messages for the life of the connection."""
     while True:
         raw = await ws.receive_text()
+        session.last_activity = time.time()
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
@@ -73,6 +76,7 @@ async def _receiver(ws: WebSocket, session):
 
 async def handle_ws(ws: WebSocket, session, last_seq: int = 0):
     await ws.accept()
+    session.last_activity = time.time()
     # Replay buffered events missed during reconnect, then run sender + receiver.
     for frame in session.snapshot_since(last_seq):
         await ws.send_json(frame)
