@@ -15,9 +15,11 @@ The wire format is OpenAI, but the rest of the agent speaks **Anthropic-style co
 ## Commands
 
 ```bash
-# Full stack (gateway + frontend + postgres + redis):
+# Full stack (nginx + gateway + frontend + postgres + redis):
 MODEL_ID=glm-5 OPENAI_API_KEY=sk-... docker compose up --build
-# gateway on :8000, frontend on :3000
+# nginx on :80 is the only public entry: proxies /api/* → gateway:8000
+# (with WebSocket upgrade) and everything else → frontend:3000.
+# gateway and frontend bind 127.0.0.1 on the host (local debug only, not public).
 
 # Core only (local dev, no DB/Redis — degrades to in-memory):
 cp .env.example .env          # then fill in API key + MODEL_ID
@@ -30,7 +32,7 @@ uvicorn agent_gateway.main:app --host 0.0.0.0 --port 8000
 
 `requirements.txt` pins `openai>=1.0.0`, `python-dotenv`, `pyyaml`, `fastapi`, `uvicorn`, `websockets`, `psycopg[binary,pool]>=3.1`, `redis>=5.0`. `code.py` imports the `openai` SDK as a generic OpenAI-compatible client.
 
-**Env vars:** `code.py` and `.env.example` agree on `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_ID` (required), `FALLBACK_MODEL_ID`. The gateway additionally reads `DATABASE_URL` (Postgres) and `REDIS_URL` (hot event pipe); both optional — unset degrades to in-memory with no crash.
+**Env vars:** `code.py` and `.env.example` agree on `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_ID` (required), `FALLBACK_MODEL_ID`. The gateway additionally reads `DATABASE_URL` (Postgres) and `REDIS_URL` (hot event pipe); both optional — unset degrades to in-memory with no crash. The frontend build arg `NEXT_PUBLIC_GATEWAY_URL` is **optional** — unset, it falls back to `window.location.origin` (same-origin, correct behind the nginx proxy); set it only if the frontend is served on a different origin than the API.
 
 There are no tests, lint, or build steps for `code.py`. The frontend has vitest + playwright (`frontend/`).
 
@@ -75,7 +77,11 @@ One file; understanding it means understanding how the loop composes the subsyst
 
 ### `frontend/`
 
-Next.js app router. `components/ChatPanel.tsx` renders the event stream; `lib/transports/` abstracts WS vs SSE; `lib/reducer.ts` is the event→UI state reducer (unit-tested in `reducer.test.ts`). `last_seq` resume semantics match the gateway.
+Next.js app router. `components/ChatPanel.tsx` renders the event stream; `lib/transports/` abstracts WS vs SSE; `lib/reducer.ts` is the event→UI state reducer (unit-tested in `reducer.test.ts`). `last_seq` resume semantics match the gateway. The gateway URL (`lib/sessions.ts`, `lib/useAgentTransport.ts`, `components/Sidebar.tsx`) defaults to `window.location.origin` so the same build works behind any nginx host without re-baking an IP/domain.
+
+### `nginx.conf` — reverse proxy
+
+Single public entry on `:80`. `location /api/` → `gateway:8000` with `Upgrade`/`Connection` headers, `proxy_buffering off`, 1h read/send timeouts for long-lived WS/SSE streams; `location /` → `frontend:3000`. The `map $http_upgrade $connection_upgrade` block is required so non-WS requests keep normal keepalive. Add a `listen 443` server block + `ssl_certificate` here when promoting to HTTPS.
 
 ## Working in this codebase
 

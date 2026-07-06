@@ -212,5 +212,25 @@ async def get_memories(sid: Optional[str] = None):
     return await asyncio.to_thread(_read)
 
 
+@app.get("/api/mcp")
+async def get_mcp(sid: Optional[str] = None):
+    """Connected MCP servers + their tools for a session (per-session
+    Session.mcp_clients). Returns [] when no session or none connected."""
+    gs = manager.get(sid) if sid else None
+    if gs is None:
+        return []
+    clients = getattr(gs.agent, "mcp_clients", {}) or {}
+    return [
+        {
+            "name": c.name,
+            "tools": [
+                {"name": t.get("name", ""), "description": t.get("description", "")}
+                for t in (c.tools or [])
+            ],
+        }
+        for c in clients.values()
+    ]
+
+
 # SSE routes registered by sse.py
 sse.register(app, manager)
