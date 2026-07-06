@@ -8,6 +8,7 @@ import type { AgentEvent } from "../lib/types";
 
 export function ChatPanel({ sessionId }: { sessionId: string | null }) {
   const [items, setItems] = useState<Item[]>([]);
+  const [inFlight, setInFlight] = useState(false);
   const [input, setInput] = useState("");
   // Reducer state (curAssistant index) lives in a ref so token appends are O(1).
   const stateRef = useRef(initialState());
@@ -43,16 +44,21 @@ export function ChatPanel({ sessionId }: { sessionId: string | null }) {
     const next = reduce(stateRef.current, e);
     stateRef.current = next;
     setItems(next.items);
+    setInFlight(next.inFlight);
   }, []);
 
   const { transport, connected, send, interrupt } = useAgentTransport(sessionId, onEvent);
 
   const submit = () => {
     const text = input.trim();
-    if (!text || !connected) return;
+    if (!text || !connected || inFlight) return;
+    // Optimistically mark the turn in-flight so the Send button disables
+    // immediately and a second click can't 409 on "a turn is already in flight".
     // The server emits a `user` event back over the transport; the reducer
     // (onEvent) adds the bubble from that, keeping the ref (source of truth)
     // driven solely by events — no optimistic add that could duplicate.
+    stateRef.current = { ...stateRef.current, inFlight: true };
+    setInFlight(true);
     send({ type: "user_message", text });
     setInput("");
   };
@@ -101,8 +107,8 @@ export function ChatPanel({ sessionId }: { sessionId: string | null }) {
         <input className="flex-1 rounded bg-zinc-900 px-3 py-2 outline-none ring-zinc-700 focus:ring-1"
                value={input} onChange={(e) => setInput(e.target.value)}
                onKeyDown={(e) => e.key === "Enter" && submit()}
-               placeholder={connected ? "Ask myAgent…" : "connecting…"} />
-        <button className="rounded bg-cyan-700 px-4 py-2 hover:bg-cyan-600" onClick={submit} disabled={!connected}>Send</button>
+               placeholder={!connected ? "connecting…" : inFlight ? "turn in progress…" : "Ask myAgent…"} />
+        <button className="rounded bg-cyan-700 px-4 py-2 hover:bg-cyan-600" onClick={submit} disabled={!connected || inFlight}>Send</button>
       </div>
     </div>
   );

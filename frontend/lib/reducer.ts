@@ -14,20 +14,24 @@ export interface ReducerState {
   lastSeq: number;             // highest event seq processed — dedupes across
                                // duplicate WS delivery (StrictMode double-mount,
                                // replay reprocess, etc.)
+  inFlight: boolean;           // a turn is running on the server — gates the Send
+                               // button so a second message can't 409 on
+                               // "a turn is already in flight".
 }
 
 export function initialState(): ReducerState {
-  return { items: [], curAssistant: null, lastSeq: 0 };
+  return { items: [], curAssistant: null, lastSeq: 0, inFlight: false };
 }
 
 // Append a user-authored message. Must go through the reducer (not just React
 // state) so the next event doesn't recompute items from a stale ref and wipe
-// the user bubble.
+// the user bubble. Sending marks the turn in-flight until the server emits done/error.
 export function reduceUser(state: ReducerState, text: string): ReducerState {
   return {
     items: [...state.items, { kind: "user", text }],
     curAssistant: null,
     lastSeq: state.lastSeq,
+    inFlight: true,
   };
 }
 
@@ -42,6 +46,7 @@ export function reduce(state: ReducerState, e: AgentEvent): ReducerState {
   const lastSeq = Math.max(state.lastSeq, seq);
   const items = [...state.items];
   let curAssistant = state.curAssistant;
+  let inFlight = state.inFlight;
   switch (e.kind) {
     case "user":
       // Server-replayed user bubble (session hydration). Live user messages go
@@ -87,9 +92,11 @@ export function reduce(state: ReducerState, e: AgentEvent): ReducerState {
       break;
     case "error":
       items.push({ kind: "error", text: e.payload.error || "error" });
+      inFlight = false;
       break;
     case "done":
       curAssistant = null;
+      inFlight = false;
       break;
     case "text":
       // Inter-round notices ([max_tokens] retry, [cron inject], …) act as
@@ -98,5 +105,5 @@ export function reduce(state: ReducerState, e: AgentEvent): ReducerState {
       items.push({ kind: "notice", text: e.payload.text || "" });
       break;
   }
-  return { items, curAssistant, lastSeq };
+  return { items, curAssistant, lastSeq, inFlight };
 }

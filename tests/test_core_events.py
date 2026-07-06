@@ -9,6 +9,7 @@ import sys, types
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import code
+import agent_core.adapter
 from code import (Session, RecordingSink, Permission, _TextBlock, _ToolUseBlock,
                   SimpleNamespace)
 
@@ -28,18 +29,18 @@ def test_text_then_done():
     def fake_chat_create(**kw):
         calls.append(kw)
         return _resp(_TextBlock("hello world"))
-    code.chat_create = fake_chat_create
+    agent_core.adapter.chat_create = fake_chat_create
 
     sink = RecordingSink()
     sess = Session(sinks=[sink], permission=AllowAllPermission(),
                    context=code.update_context({}, []))
-    sess.history.append({"role": "user", "content": "hi"})
+    sess.append_both({"role": "user", "content": "hi"})
     code.agent_loop(sess)
 
     kinds = [e["kind"] for e in sink.events]
     assert "done" in kinds and kinds[-1] == "done", kinds
     assert any(e["kind"] == "token" for e in sink.events) is False  # RecordingSink not streaming
-    assert sess.history[-1]["role"] == "assistant"
+    assert sess.record[-1]["role"] == "assistant"
     print("test_text_then_done: OK", kinds)
 
 
@@ -53,12 +54,12 @@ def test_tool_start_result_done():
     ]
     def fake_chat_create(**kw):
         return script.pop(0)
-    code.chat_create = fake_chat_create
+    agent_core.adapter.chat_create = fake_chat_create
 
     sink = RecordingSink()
     sess = Session(sinks=[sink], permission=AllowAllPermission(),
                    context=code.update_context({}, []))
-    sess.history.append({"role": "user", "content": "read the readme"})
+    sess.append_both({"role": "user", "content": "read the readme"})
     code.agent_loop(sess)
 
     kinds = [e["kind"] for e in sink.events]
@@ -83,7 +84,7 @@ def test_permission_denied():
     ]
     def fake_chat_create(**kw):
         return script.pop(0)
-    code.chat_create = fake_chat_create
+    agent_core.adapter.chat_create = fake_chat_create
 
     class DenyAll(Permission):
         def request(self, block):
@@ -92,7 +93,7 @@ def test_permission_denied():
     sink = RecordingSink()
     sess = Session(sinks=[sink], permission=DenyAll(),
                    context=code.update_context({}, []))
-    sess.history.append({"role": "user", "content": "rm something"})
+    sess.append_both({"role": "user", "content": "rm something"})
     code.agent_loop(sess)
 
     kinds = [e["kind"] for e in sink.events]
@@ -106,12 +107,12 @@ def test_seq_monotonic():
     """Every emitted event carries a strictly increasing seq."""
     def fake_chat_create(**kw):
         return _resp(_TextBlock("x"))
-    code.chat_create = fake_chat_create
+    agent_core.adapter.chat_create = fake_chat_create
 
     sink = RecordingSink()
     sess = Session(sinks=[sink], permission=AllowAllPermission(),
                    context=code.update_context({}, []))
-    sess.history.append({"role": "user", "content": "hi"})
+    sess.append_both({"role": "user", "content": "hi"})
     code.agent_loop(sess)
 
     seqs = [e["payload"]["seq"] for e in sink.events]

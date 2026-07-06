@@ -11,6 +11,7 @@ import json
 import threading
 import time as _time
 import code
+import agent_core.adapter
 import httpx
 import uvicorn
 from code import _TextBlock, _ToolUseBlock, SimpleNamespace
@@ -57,7 +58,7 @@ def _install_script(script):
                 if getattr(block, "type", None) == "text" and block.text:
                     events.emit("token", {"text": block.text})
         return resp
-    code.chat_create = fake
+    agent_core.adapter.chat_create = fake
 
 
 def _resp(*blocks, stop="end_turn"):
@@ -200,7 +201,7 @@ def test_status_and_views():
     sid = client.post("/api/sessions", json={"transport": "ws"}).json()["session_id"]
     r = client.get(f"/api/sessions/{sid}/status")
     assert r.status_code == 200 and r.json()["session_id"] == sid, r.text
-    for path in ("/api/skills", "/api/tasks", "/api/memories"):
+    for path in ("/api/skills", "/api/mcp"):
         r = client.get(path)
         assert r.status_code == 200, (path, r.text)
     print("test_status_and_views: OK")

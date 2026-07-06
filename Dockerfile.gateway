@@ -20,6 +20,7 @@ RUN printf '#!/bin/sh\nexec /usr/local/bin/node /usr/local/lib/node_modules/npm/
 
 # core + gateway package + skills (skills are prompts the agent reads at runtime)
 COPY code.py /app/code.py
+COPY agent_core /app/agent_core
 COPY agent_gateway /app/agent_gateway
 COPY skills /app/skills
 
