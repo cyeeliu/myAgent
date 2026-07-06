@@ -3,7 +3,10 @@ import { useEffect, useState } from "react";
 import type { SessionManager } from "../lib/useSessionManager";
 import type { SessionMeta } from "../lib/sessions";
 
-const GATEWAY = process.env.NEXT_PUBLIC_GATEWAY_URL || "http://localhost:8000";
+// Same-origin by default (see lib/sessions.ts).
+const GATEWAY =
+  process.env.NEXT_PUBLIC_GATEWAY_URL ||
+  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 
 type Skill = { name: string; description: string };
 type Task = { id: string; subject: string; status: string };

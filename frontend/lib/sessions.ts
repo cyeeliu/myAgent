@@ -2,7 +2,13 @@
 // in useAgentTransport; this module is just the REST plumbing for the sidebar's
 // session manager. Mirrors agent_gateway.main routes.
 
-const GATEWAY = process.env.NEXT_PUBLIC_GATEWAY_URL || "http://localhost:8000";
+// Same-origin by default: behind the nginx reverse proxy the gateway API lives
+// on the same origin as the page (nginx routes /api/* to the gateway), so we
+// can just use window.location.origin and avoid baking an IP/domain at build
+// time. Falls back to localhost:8000 for direct `next dev` without nginx.
+const GATEWAY =
+  process.env.NEXT_PUBLIC_GATEWAY_URL ||
+  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 
 export type SessionMeta = {
   session_id: string;

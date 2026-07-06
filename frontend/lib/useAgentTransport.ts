@@ -4,7 +4,11 @@ import type { AgentEvent, AgentClientMsg, Transport } from "./types";
 import { WebSocketTransport } from "./transports/ws";
 import { SSETransport } from "./transports/sse";
 
-const GATEWAY = process.env.NEXT_PUBLIC_GATEWAY_URL || "http://localhost:8000";
+// Same-origin by default (see lib/sessions.ts). Avoids baking a gateway URL at
+// build time; behind nginx the API is on the same origin as the page.
+const GATEWAY =
+  process.env.NEXT_PUBLIC_GATEWAY_URL ||
+  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 
 export interface TransportState {
   transport: "ws" | "sse" | null;
