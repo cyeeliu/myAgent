@@ -2,6 +2,10 @@
 // own behaviour via the `__mock` handles exposed on globalThis.
 import { vi } from "vitest";
 
+// React 18 act() needs this flag to suppress the "testing environment not
+// configured to support act(...)" warning under jsdom.
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
 // --- WebSocket ---
 type WsListener = (ev: any) => void;
 class MockWebSocket {

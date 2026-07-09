@@ -1,7 +1,11 @@
 """agent_core.recovery — extracted from code.py (s20 comprehensive agent)."""
 import random
 import time
-from agent_core.env import BASE_DELAY_MS, FALLBACK_MODEL, MAX_CONSECUTIVE_529, MAX_RETRIES, PRIMARY_MODEL
+from agent_core import model_config
+from agent_core.env import (
+    BASE_DELAY_429_MS, BASE_DELAY_MS, MAX_CONSECUTIVE_529,
+    MAX_DELAY_429_MS, MAX_RETRIES, MAX_RETRIES_429,
+)
 
 
 class RecoveryState:
@@ -10,14 +14,25 @@ class RecoveryState:
         self.recovery_count = 0
         self.consecutive_529 = 0
         self.has_attempted_reactive_compact = False
-        self.current_model = PRIMARY_MODEL
+        self.current_model = model_config.model()
 
 def retry_delay(attempt: int) -> float:
     base = min(BASE_DELAY_MS * (2 ** attempt), 32000) / 1000
     return base + random.uniform(0, base * 0.25)
 
+def retry_delay_429(attempt: int) -> float:
+    # Longer base + higher cap than the transient-error path: rate-limit windows
+    # are typically tens of seconds, not sub-second.
+    base = min(BASE_DELAY_429_MS * (2 ** attempt), MAX_DELAY_429_MS) / 1000
+    return base + random.uniform(0, base * 0.25)
+
 def with_retry(fn, state: RecoveryState):
-    for attempt in range(MAX_RETRIES):
+    # 429 (rate limit) gets its own generous budget; 529/overloaded and other
+    # retriable errors share MAX_RETRIES. Each counter only counts its own kind,
+    # so a 429 storm doesn't burn the 529 budget or vice versa.
+    attempts_429 = 0
+    attempts_529 = 0
+    while True:
         try:
             result = fn()
             state.consecutive_529 = 0
@@ -26,24 +41,32 @@ def with_retry(fn, state: RecoveryState):
             name = type(e).__name__.lower()
             msg = str(e).lower()
             if "ratelimit" in name or "429" in msg:
-                delay = retry_delay(attempt)
-                print(f"  \033[33m[429] retry {attempt + 1}/{MAX_RETRIES} "
+                attempts_429 += 1
+                if attempts_429 > MAX_RETRIES_429:
+                    raise RuntimeError(
+                        f"Max retries ({MAX_RETRIES_429}) exceeded for 429 rate limit")
+                delay = retry_delay_429(attempts_429 - 1)
+                print(f"  \033[33m[429] retry {attempts_429}/{MAX_RETRIES_429} "
                       f"after {delay:.1f}s\033[0m")
                 time.sleep(delay)
                 continue
             if "overloaded" in name or "529" in msg or "overloaded" in msg:
+                attempts_529 += 1
+                if attempts_529 > MAX_RETRIES:
+                    raise RuntimeError(
+                        f"Max retries ({MAX_RETRIES}) exceeded for 529/overloaded")
                 state.consecutive_529 += 1
-                if state.consecutive_529 >= MAX_CONSECUTIVE_529 and FALLBACK_MODEL:
-                    state.current_model = FALLBACK_MODEL
+                fb = model_config.fallback()
+                if state.consecutive_529 >= MAX_CONSECUTIVE_529 and fb:
+                    state.current_model = fb
                     state.consecutive_529 = 0
-                    print(f"  \033[31m[529] switching to {FALLBACK_MODEL}\033[0m")
-                delay = retry_delay(attempt)
-                print(f"  \033[33m[529] retry {attempt + 1}/{MAX_RETRIES} "
+                    print(f"  \033[31m[529] switching to {fb}\033[0m")
+                delay = retry_delay(attempts_529 - 1)
+                print(f"  \033[33m[529] retry {attempts_529}/{MAX_RETRIES} "
                       f"after {delay:.1f}s\033[0m")
                 time.sleep(delay)
                 continue
             raise
-    raise RuntimeError(f"Max retries ({MAX_RETRIES}) exceeded")
 
 def is_prompt_too_long_error(e: Exception) -> bool:
     msg = str(e).lower()

@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { reduce, reduceUser, initialState } from "./reducer";
+import { reduce, reduceUser, initialState, applyLiveActivity, initialActivity } from "./reducer";
 
 const ev = (kind: any, payload: any, seq = 1) => ({ kind, payload, seq });
 
-describe("reducer", () => {
+describe("reducer (items)", () => {
   it("accumulates tokens into one assistant bubble", () => {
     let s = initialState();
     s = reduce(s, ev("token", { text: "Hel" }, 1));
@@ -56,9 +56,6 @@ describe("reducer", () => {
   });
 
   it("tokens after a tool_start land in a new bubble below the card (regression)", () => {
-    // Bug: tool_start didn't reset curAssistant, so the next round's tokens
-    // appended to the pre-tool assistant bubble, rendering the follow-up reply
-    // ABOVE the tool card instead of below it.
     let s = initialState();
     s = reduce(s, ev("token", { text: "Let me check" }, 1));
     s = reduce(s, ev("tool_start", { id: "t1", name: "read", input: {} }, 2));
@@ -84,9 +81,6 @@ describe("reducer", () => {
   });
 
   it("user replay event renders a user bubble and resets curAssistant", () => {
-    // Hydrated sessions replay history as events; user messages arrive as
-    // kind:"user" frames. They must render as bubbles and not merge the next
-    // assistant turn into a prior bubble.
     let s = initialState();
     s = reduce(s, ev("user", { text: "hello" }, 1));
     s = reduce(s, ev("token", { text: "hi" }, 2));
@@ -94,5 +88,80 @@ describe("reducer", () => {
     expect(s.items).toHaveLength(2);
     expect(s.items[0]).toMatchObject({ kind: "user", text: "hello" });
     expect(s.items[1]).toMatchObject({ kind: "assistant", text: "hi" });
+  });
+
+  it("optimistic user bubble consumes its server echo (no duplicate)", () => {
+    // Bug: submit() pushed a user bubble via reduceUser AND the gateway emitted
+    // a live `user` event on post_message, so the sender saw two copies. The
+    // reducer now records the optimistic text and consumes one matching echo.
+    let s = initialState();
+    s = reduceUser(s, "hello");
+    s = reduce(s, ev("user", { text: "hello" }, 1));   // server echo → consumed
+    s = reduce(s, ev("token", { text: "hi" }, 2));
+    s = reduce(s, ev("done", {}, 3));
+    expect(s.items).toHaveLength(2);
+    expect(s.items[0]).toMatchObject({ kind: "user", text: "hello" });
+    expect(s.items[1]).toMatchObject({ kind: "assistant", text: "hi" });
+    expect(s.pendingUser).toBeNull();
+  });
+
+  it("a second identical user message still renders (consume is one-shot)", () => {
+    let s = initialState();
+    s = reduceUser(s, "hi"); s = reduce(s, ev("user", { text: "hi" }, 1));
+    s = reduceUser(s, "hi"); s = reduce(s, ev("user", { text: "hi" }, 2));
+    s = reduce(s, ev("done", {}, 3));
+    const userMsgs = s.items.filter((i) => i.kind === "user");
+    expect(userMsgs).toHaveLength(2);
+  });
+
+  it("rebuilds items from replay frames (history reconstruction)", () => {
+    // Reconnect replays past events; items must rebuild so the conversation
+    // renders. (Status is transient — not in the reducer — so replay can't
+    // animate or strand the indicator; see the applyLiveActivity suite.)
+    let s = initialState();
+    s = reduce(s, ev("user", { text: "hi" }, 1));
+    s = reduce(s, ev("token", { text: "Let me" }, 2));
+    s = reduce(s, ev("tool_start", { id: "t1", name: "bash", input: {} }, 3));
+    s = reduce(s, ev("tool_result", { id: "t1", content: "out", blocked: false }, 4));
+    s = reduce(s, ev("token", { text: "done" }, 5));
+    expect(s.items.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("applyLiveActivity (transient status)", () => {
+  it("tracks the live activity across a multi-round turn", () => {
+    let a = initialActivity;
+    a = applyLiveActivity(a, ev("token", { text: "Let me" }, 1));
+    expect(a.status.kind).toBe("replying");
+    a = applyLiveActivity(a, ev("tool_start", { id: "t1", name: "bash", input: {} }, 2));
+    expect(a.status).toMatchObject({ kind: "tool", toolName: "bash", toolCount: 1, round: 0 });
+    a = applyLiveActivity(a, ev("tool_result", { id: "t1", content: "out", blocked: false }, 3));
+    expect(a.status).toMatchObject({ kind: "thinking", toolCount: 1, round: 1 });
+    a = applyLiveActivity(a, ev("tool_start", { id: "t2", name: "read_file", input: {} }, 4));
+    expect(a.status).toMatchObject({ kind: "tool", toolName: "read_file", toolCount: 2, round: 1 });
+    a = applyLiveActivity(a, ev("tool_result", { id: "t2", content: "data", blocked: false }, 5));
+    a = applyLiveActivity(a, ev("token", { text: "done" }, 6));
+    expect(a.status.kind).toBe("replying");
+    a = applyLiveActivity(a, ev("done", {}, 7));
+    expect(a.status.kind).toBe("idle");
+    expect(a.inFlight).toBe(false);
+  });
+
+  it("surfaces permission wait and resets on done/error", () => {
+    let a = initialActivity;
+    a = applyLiveActivity(a, ev("permission_request", { request_id: "r1", reason: "bash" }, 1));
+    expect(a.status.kind).toBe("permission");
+    a = applyLiveActivity(a, ev("error", { error: "denied" }, 2));
+    expect(a.status.kind).toBe("idle");
+    expect(a.inFlight).toBe(false);
+  });
+
+  it("leaves activity untouched for user / task_notification / memory", () => {
+    let a = { status: { kind: "replying" as const, toolName: null, toolCount: 0, round: 1 }, inFlight: true };
+    a = applyLiveActivity(a, ev("user", { text: "x" }, 1));
+    a = applyLiveActivity(a, ev("task_notification", { task_id: "b1" }, 2));
+    a = applyLiveActivity(a, ev("memory", {}, 3));
+    expect(a.status.kind).toBe("replying");
+    expect(a.inFlight).toBe(true);
   });
 });

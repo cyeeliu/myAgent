@@ -4,7 +4,8 @@
 
 export type EventKind =
   | "token" | "text" | "tool_start" | "tool_result"
-  | "error" | "permission_request" | "compacted" | "done" | "ping" | "user";
+  | "error" | "permission_request" | "compacted" | "done" | "ping" | "user"
+  | "task_notification" | "memory";
 
 export interface AgentEvent {
   seq: number;

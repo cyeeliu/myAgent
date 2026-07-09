@@ -52,6 +52,15 @@ services:
       - REDIS_URL=redis://redis:6379/0
     volumes:
       - ${HOME}/.myAgent/workspace:/app/workspace
+    # bubblewrap sandbox (agent_core/sandbox.py) needs to create mount+user
+    # namespaces inside the container, which docker's default seccomp/cap set
+    # blocks. Relax just enough for bwrap; the gateway still binds 127.0.0.1
+    # (public entry is nginx). Drop these if you set SANDBOX=0.
+    security_opt:
+      - "seccomp=unconfined"
+      - "apparmor=unconfined"
+    cap_add:
+      - SYS_ADMIN
     depends_on:
       db:
         condition: service_healthy

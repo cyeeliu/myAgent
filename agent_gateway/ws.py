@@ -73,7 +73,13 @@ async def handle_ws(ws: WebSocket, session, last_seq: int = 0):
     # Replay buffered events missed during reconnect, then run sender + receiver.
     last = last_seq
     for frame in session.pipe.replay_since(last_seq):
-        await ws.send_json(frame)
+        # Mark replay frames so the client rebuilds chat items but does NOT
+        # animate the live status bar (thinking/replying/tool) from history —
+        # only live events drive status. Without this, reloading a session
+        # flickers the indicator through every past state and, since synthesized
+        # replay never includes `done`, leaves it stuck on a non-idle state.
+        await ws.send_json({**frame,
+                            "payload": {**frame.get("payload", {}), "replay": True}})
         last = frame["seq"]
     sender = asyncio.create_task(_sender(ws, session, last))
     receiver = asyncio.create_task(_receiver(ws, session))

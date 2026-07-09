@@ -32,7 +32,10 @@ async def _event_stream(gs, last_seq: int):
     # Replay missed events from the pipe.
     last = last_seq
     for frame in gs.pipe.replay_since(last_seq):
-        yield _format_sse(frame)
+        # Mark replay frames so the client rebuilds items without animating the
+        # live status bar from history (see ws.py for the rationale).
+        yield _format_sse({**frame,
+                           "payload": {**frame.get("payload", {}), "replay": True}})
         last = max(last, frame.get("seq", 0))
     # Live drain via the pipe.
     last_beat = time.monotonic()

@@ -204,9 +204,44 @@ class GatewaySession:
             # "in flight" after the turn has ended.
             with self._worker_lock:
                 self._worker = None
+            # Race backstop: a background task may have completed between the
+            # last inject_background_notifications pass and this point. Re-check
+            # and, if anything is pending, start a follow-up turn to deliver it.
+            try:
+                self._on_background_complete()
+            except Exception:
+                pass
 
     def interrupt(self):
         self.agent.interrupted = True
+
+    def _on_background_complete(self):
+        """Called by a background task's worker thread when it finishes.
+
+        If a turn is still in flight, the running loop's
+        inject_background_notifications will pick the result up on its next
+        iteration — do nothing. If the turn has ended, pop pending results,
+        inject them as a user-side notification, and start a fresh turn so the
+        model can react (summarize a build, follow up, …). Without this, a
+        result that lands after agent_loop returns is orphaned until the next
+        user message.
+        """
+        with self._worker_lock:
+            if self._worker is not None and self._worker.is_alive():
+                return  # the running loop will drain background_results itself
+            notifications = code.collect_background_results()
+            if not notifications:
+                return
+            self.last_activity = time.time()
+            self.agent.append_both({"role": "user", "content": [
+                {"type": "text", "text": note} for note in notifications]})
+            self.agent.interrupted = False
+            db.save_chat_record(self.session_id, self.agent.record,
+                                self.last_activity, self._title())
+            t = threading.Thread(target=self._run_turn, name=f"agent-bg-{self.session_id}",
+                                  daemon=True)
+            self._worker = t
+            t.start()
 
     # ── listing metadata ──
 
@@ -285,6 +320,10 @@ class SessionManager:
                             created_at=created_at or time.time(),
                             last_activity=last_activity or time.time())
         permission.resolver = gs._resolver
+        # When a background task finishes after the turn ended, re-trigger the
+        # loop so the model reacts to the result instead of orphaning it until
+        # the next user message.
+        agent.on_background_complete = gs._on_background_complete
         return gs
 
     def create(self, transport: str = "auto", loop: asyncio.AbstractEventLoop = None,

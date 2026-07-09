@@ -8,36 +8,63 @@ export type Item =
   | { kind: "notice"; text: string }
   | { kind: "error"; text: string };
 
+// Live activity the agent is performing right now. Drives the status bar at the
+// bottom of the chat. This is TRANSIENT — it is NOT part of the reducer state
+// (which rebuilds from replayed history) and is never driven by replay frames.
+// It lives in ChatPanel as a separate piece of state updated only by live
+// events + the live send + the server's worker_alive on reconnect. Keeping it
+// out of the reducer means loading a session's history can never animate or
+// strand the indicator on a past state.
+export type StatusKind = "idle" | "thinking" | "replying" | "tool" | "permission";
+
+export interface Status {
+  kind: StatusKind;
+  toolName: string | null; // current tool call (when kind === "tool")
+  toolCount: number;       // tools invoked so far this turn (cumulative)
+  round: number;           // model round within the turn (1 = first LLM call)
+}
+
+export const initialStatus: Status = { kind: "idle", toolName: null, toolCount: 0, round: 0 };
+
+// The reducer state is the CONVERSATION (items + where the next token lands +
+// dedup cursor). It is rebuilt from replayed history on reconnect. Live-activity
+// status/inFlight are deliberately not here.
 export interface ReducerState {
   items: Item[];
   curAssistant: number | null; // index of the assistant bubble accumulating tokens
   lastSeq: number;             // highest event seq processed — dedupes across
                                // duplicate WS delivery (StrictMode double-mount,
                                // replay reprocess, etc.)
-  inFlight: boolean;           // a turn is running on the server — gates the Send
-                               // button so a second message can't 409 on
-                               // "a turn is already in flight".
+  pendingUser: string | null;  // text of the last optimistic user bubble awaiting
+                               // its server echo. The gateway emits a live `user`
+                               // event on post_message (needed so OTHER clients
+                               // reconnecting rebuild the bubble); the sender
+                               // already added it via reduceUser, so the matching
+                               // echo is consumed once to avoid a duplicate.
 }
 
 export function initialState(): ReducerState {
-  return { items: [], curAssistant: null, lastSeq: 0, inFlight: false };
+  return { items: [], curAssistant: null, lastSeq: 0, pendingUser: null };
 }
 
 // Append a user-authored message. Must go through the reducer (not just React
 // state) so the next event doesn't recompute items from a stale ref and wipe
-// the user bubble. Sending marks the turn in-flight until the server emits done/error.
+// the user bubble. Does NOT touch live activity — ChatPanel sets that on send.
+// Records the text as pending so the server's echoing `user` event is consumed
+// instead of pushing a second copy.
 export function reduceUser(state: ReducerState, text: string): ReducerState {
   return {
     items: [...state.items, { kind: "user", text }],
     curAssistant: null,
     lastSeq: state.lastSeq,
-    inFlight: true,
+    pendingUser: text,
   };
 }
 
 // Pure event reducer (spec §11.6). ChatPanel delegates to this so the token /
-// tool / permission / done / error / compacted transitions are unit-testable
-// without rendering.
+// tool / permission / done / error / compacted item transitions are unit-
+// testable without rendering. Rebuilds items for BOTH replay and live events
+// (history reconstruction and live streaming share the same item logic).
 export function reduce(state: ReducerState, e: AgentEvent): ReducerState {
   // Dedupe by monotonic seq: a second WS (StrictMode dev double-mount) or a
   // replay reprocess can redeliver the same event. Skip if already seen.
@@ -46,14 +73,20 @@ export function reduce(state: ReducerState, e: AgentEvent): ReducerState {
   const lastSeq = Math.max(state.lastSeq, seq);
   const items = [...state.items];
   let curAssistant = state.curAssistant;
-  let inFlight = state.inFlight;
   switch (e.kind) {
-    case "user":
-      // Server-replayed user bubble (session hydration). Live user messages go
-      // through reduceUser instead; this kind only appears in replay frames.
+    case "user": {
+      // The gateway emits `user` both for replay (reconnect hydration) AND live
+      // on post_message (so other tabs rebuild the bubble). The sender already
+      // added the bubble optimistically via reduceUser — consume the matching
+      // echo once instead of pushing a duplicate.
+      const text = e.payload.text || "";
+      if (state.pendingUser !== null && state.pendingUser === text) {
+        return { items, curAssistant: null, lastSeq, pendingUser: null };
+      }
       curAssistant = null;
-      items.push({ kind: "user", text: e.payload.text || "" });
+      items.push({ kind: "user", text });
       break;
+    }
     case "token": {
       if (curAssistant === null) {
         items.push({ kind: "assistant", text: "" });
@@ -92,11 +125,9 @@ export function reduce(state: ReducerState, e: AgentEvent): ReducerState {
       break;
     case "error":
       items.push({ kind: "error", text: e.payload.error || "error" });
-      inFlight = false;
       break;
     case "done":
       curAssistant = null;
-      inFlight = false;
       break;
     case "text":
       // Inter-round notices ([max_tokens] retry, [cron inject], …) act as
@@ -104,6 +135,66 @@ export function reduce(state: ReducerState, e: AgentEvent): ReducerState {
       curAssistant = null;
       items.push({ kind: "notice", text: e.payload.text || "" });
       break;
+    case "task_notification": {
+      // A background task finished. Surface a concise heads-up; the full output
+      // is delivered to the model (injected as a user message) and the agent's
+      // follow-up turn renders the real summary. Keep this notice short.
+      const p = e.payload || {};
+      const id = p.task_id ? ` ${p.task_id}` : "";
+      const cmd = p.command ? ` ${p.command}` : "";
+      const code = p.exit_code != null ? ` exit=${p.exit_code}` : "";
+      const summary = p.summary ? ` → ${p.summary}` : "";
+      items.push({ kind: "notice", text: `[background${id}${cmd} 完成${code}${summary}]` });
+      break;
+    }
+    case "memory":
+      // Memory extraction wrote files in the background — informational only.
+      break;
   }
-  return { items, curAssistant, lastSeq, inFlight };
+  return { items, curAssistant, lastSeq, pendingUser: state.pendingUser };
+}
+
+// Transient live-activity state: the status bar + the Send-gate. Updated ONLY
+// by live events (never replay) and the live send. Pulled out of the reducer so
+// replayed history can't animate or strand the indicator.
+export interface Activity {
+  status: Status;
+  inFlight: boolean; // a turn is running on the server — gates Send so a second
+                     // message can't 409 on "a turn is already in flight".
+}
+
+export const initialActivity: Activity = { status: initialStatus, inFlight: false };
+
+// Advance the live activity by one LIVE event. Returns the next activity.
+// ChatPanel calls this only for non-replay events. `done`/`error` clear the
+// turn; tool/token/permission transition the indicator; user/task_notification/
+// memory leave it untouched.
+export function applyLiveActivity(prev: Activity, e: AgentEvent): Activity {
+  let { status, inFlight } = prev;
+  switch (e.kind) {
+    case "token":
+      status = { ...status, kind: "replying" };
+      break;
+    case "tool_start":
+      status = { kind: "tool", toolName: e.payload.name, toolCount: status.toolCount + 1, round: status.round };
+      break;
+    case "tool_result":
+      // Tool finished — the model will think again before the next token/tool.
+      status = { kind: "thinking", toolName: null, toolCount: status.toolCount, round: status.round + 1 };
+      break;
+    case "permission_request":
+      status = { ...status, kind: "permission" };
+      break;
+    case "compacted":
+    case "text":
+      status = { ...status, kind: "thinking" };
+      break;
+    case "error":
+    case "done":
+      status = initialStatus;
+      inFlight = false;
+      break;
+    // user, task_notification, memory, ping: no activity change.
+  }
+  return { status, inFlight };
 }

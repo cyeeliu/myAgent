@@ -207,6 +207,131 @@ def test_status_and_views():
     print("test_status_and_views: OK")
 
 
+def test_background_completes_after_turn_retriggers_loop():
+    """A background task that finishes AFTER the turn ended must re-trigger the
+    loop so the model can react to its result. Without the on_background_complete
+    hook the result orphans in background_results until the next user message."""
+    # 1st call: kick off a background bash (run_in_background → should_run_background).
+    # 2nd call: the turn ends with a plain text (background still running).
+    # 3rd call: the follow-up turn reacts to the injected task_notification.
+    _install_script([
+        _resp(_ToolUseBlock("t0", "bash",
+                            {"command": "sleep 1; echo bg-done", "run_in_background": True}),
+              stop="end_turn"),
+        _resp(_TextBlock("started the build in the background"), stop="end_turn"),
+        _resp(_TextBlock("build finished, I saw bg-done"), stop="end_turn"),
+    ])
+    sid = client.post("/api/sessions", json={"transport": "ws"}).json()["session_id"]
+    r = client.post(f"/api/sessions/{sid}/messages", json={"text": "run a build"})
+    assert r.status_code == 200, r.text
+
+    # Wait for the background task (sleep 1) to complete and the follow-up turn
+    # to run. The chat record should eventually contain the task_notification
+    # user message AND the reacting assistant text.
+    import time as _t
+    gs = manager.get(sid)
+    deadline = _t.time() + 15
+    while _t.time() < deadline:
+        rec = gs.agent.record
+        has_notification = any(
+            m.get("role") == "user" and "task_notification" in str(m.get("content", ""))
+            for m in rec)
+        has_reaction = any(
+            m.get("role") == "assistant" and "bg-done" in str(m.get("content", ""))
+            for m in rec)
+        if has_notification and has_reaction:
+            break
+        _t.sleep(0.2)
+    assert has_notification, "task_notification was not injected into the record"
+    assert has_reaction, "follow-up turn did not react to the background result"
+    print("test_background_completes_after_turn_retriggers_loop: OK")
+
+
+def test_background_no_timeout_long_command_completes():
+    """A background command that runs longer than the old 120s foreground cap
+    must NOT be killed. With the Popen-based background runner there is no
+    timeout, so `sleep 2; echo done` completes and its output reaches the
+    record. (Regression for the 'Error: Timeout (120s)' bug.)"""
+    _install_script([
+        _resp(_ToolUseBlock("t0", "bash",
+                            {"command": "sleep 2; echo long-bg-done",
+                             "run_in_background": True}),
+              stop="end_turn"),
+        _resp(_TextBlock("started"), stop="end_turn"),
+        _resp(_TextBlock("saw long-bg-done"), stop="end_turn"),
+    ])
+    sid = client.post("/api/sessions", json={"transport": "ws"}).json()["session_id"]
+    r = client.post(f"/api/sessions/{sid}/messages", json={"text": "run a long build"})
+    assert r.status_code == 200, r.text
+
+    import time as _t
+    gs = manager.get(sid)
+    deadline = _t.time() + 15
+    saw = False
+    while _t.time() < deadline:
+        rec = gs.agent.record
+        if any(m.get("role") == "assistant" and "long-bg-done" in str(m.get("content", ""))
+               for m in rec):
+            saw = True
+            break
+        _t.sleep(0.2)
+    assert saw, "long background task did not complete / react (was it timed out?)"
+    # And crucially no timeout error leaked into the record.
+    assert not any("Timeout (120s)" in str(m.get("content", "")) for m in gs.agent.record), \
+        "background task was killed by the 120s foreground timeout"
+    print("test_background_no_timeout_long_command_completes: OK")
+
+
+def test_task_output_reads_partial_and_stop_kills():
+    """task_output reads output from a running background task; task_stop kills
+    it. Exercises the new Claude-Code-style tools end-to-end via the agent loop."""
+    import agent_core.background as bg
+    import os as _os
+    marker = f"/tmp/myagent_bg_kill_{int(_time.time()*1000)}"
+    try:
+        _os.remove(marker)
+    except OSError:
+        pass
+    # Reset module state so bg_ids and dicts are clean.
+    bg.background_tasks.clear()
+    bg.background_results.clear()
+    bg._bg_counter = 0
+    _install_script([
+        # 1st turn: start a long background sleep that only creates a marker if
+        # it runs to completion (it shouldn't — we kill it first).
+        _resp(_ToolUseBlock("t0", "bash",
+                            {"command": f"sleep 30; touch {marker}",
+                             "run_in_background": True}),
+              stop="end_turn"),
+        # 2nd turn: list tasks, then stop the running one.
+        _resp(_ToolUseBlock("t1", "task_list", {}), stop="end_turn"),
+        _resp(_ToolUseBlock("t2", "task_stop", {"task_id": "bg_0001"}),
+              stop="end_turn"),
+        _resp(_TextBlock("stopped the task"), stop="end_turn"),
+    ])
+    sid = client.post("/api/sessions", json={"transport": "ws"}).json()["session_id"]
+    r = client.post(f"/api/sessions/{sid}/messages", json={"text": "start then stop"})
+    assert r.status_code == 200, r.text
+
+    import time as _t
+    gs = manager.get(sid)
+    deadline = _t.time() + 15
+    stopped = False
+    while _t.time() < deadline:
+        rec = gs.agent.record
+        if any(m.get("role") == "assistant" and "stopped the task" in str(m.get("content", ""))
+               for m in rec):
+            stopped = True
+            break
+        _t.sleep(0.2)
+    assert stopped, "agent did not reach the stop step"
+
+    # The long sleep must NOT have finished (we killed it at ~0s, not 30s) — the
+    # completion marker file must not exist.
+    assert not _os.path.exists(marker), "killed task ran to completion (marker created)"
+    print("test_task_output_reads_partial_and_stop_kills: OK")
+
+
 if __name__ == "__main__":
     test_create_session()
     test_ws_text_turn()
@@ -214,4 +339,7 @@ if __name__ == "__main__":
     test_sse_stream_and_replay()
     test_sse_permission_post()
     test_status_and_views()
+    test_background_completes_after_turn_retriggers_loop()
+    test_background_no_timeout_long_command_completes()
+    test_task_output_reads_partial_and_stop_kills()
     print("\nAll gateway tests passed.")

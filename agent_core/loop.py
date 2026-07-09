@@ -3,7 +3,10 @@ import sys
 import threading
 import time
 from agent_core import adapter
-from agent_core.background import should_run_background, start_background_task
+from agent_core import model_config
+from agent_core.background import (
+    should_run_background, start_background_task, collect_background_results,
+)
 from agent_core.blocks import has_tool_use
 from agent_core.compaction import compact_history, reactive_compact
 from agent_core.context import build_user_content, inject_background_notifications, prepare_context, update_context
@@ -55,6 +58,9 @@ def agent_loop(session: Session):
     while True:
         # One cycle: inject scheduled/background work, prepare context, call
         # the model, execute tool_use blocks, append tool_results, repeat.
+        # Re-read the model each turn so an online config change takes effect
+        # next turn (model_config.model() is mtime-cached).
+        state.current_model = model_config.model()
         if session.interrupted:
             session.emit("done", {"reason": "interrupted"})
             return
@@ -127,6 +133,11 @@ def agent_loop(session: Session):
         session.append_both({"role": "assistant", "content": response.content})
         if not has_tool_use(response.content):
             trigger_hooks("Stop", messages)
+            # Background tasks are NOT waited on here: a long-running command
+            # (dev server, watcher) would hang the turn. Instead the task runs
+            # detached; when it exits, on_background_complete re-triggers a fresh
+            # turn with its output (mirrors Claude Code's "re-invoke on exit").
+            # The agent can also poll/kill via the task_output / task_stop tools.
             # Memory extraction/consolidation runs in a fire-and-forget daemon
             # thread so the turn's `done` fires immediately and the client can
             # start the next turn without waiting on the extra LLM round-trip.
@@ -187,7 +198,7 @@ def agent_loop(session: Session):
                 continue
 
             if should_run_background(block.name, block.input):
-                bg_id = start_background_task(block, handlers)
+                bg_id = start_background_task(block, handlers, session)
                 output = (f"[Background task {bg_id} started] "
                           "Result will arrive as a task_notification.")
                 results.append({"type": "tool_result",

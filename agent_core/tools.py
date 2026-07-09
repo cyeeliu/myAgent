@@ -3,6 +3,11 @@ from pathlib import Path
 import ast
 import json
 import subprocess
+import urllib.request
+import urllib.error
+import urllib.parse
+import re
+import socket
 from agent_core.bus import BUS, consume_lead_inbox
 from agent_core.cron import run_cancel_cron, run_list_crons, run_schedule_cron
 from agent_core.env import workdir
@@ -26,14 +31,48 @@ def safe_path(p: str, cwd: Path = None) -> Path:
 
 def run_bash(command: str, cwd: Path = None,
              run_in_background: bool = False) -> str:
-    # run_in_background is consumed by the dispatcher; direct execution ignores it.
+    # run_in_background is consumed by the dispatcher (background.py starts the
+    # command detached via Popen with no timeout); this path only runs foreground
+    # commands, which get a 120s cap. Long-running work must use run_in_background.
+    from agent_core import sandbox
+    base = Path(cwd) if cwd else workdir()
     try:
-        r = subprocess.run(command, shell=True, cwd=cwd or workdir(),
-                           capture_output=True, text=True, timeout=120)
+        if sandbox.enabled(base):
+            # bwrap fails closed: a namespace/cap error makes bwrap exit
+            # non-zero with a stderr message rather than running unsandboxed.
+            r = subprocess.run(sandbox.build_argv(base, command),
+                               capture_output=True, text=True, timeout=120)
+        else:
+            r = subprocess.run(command, shell=True, cwd=base,
+                               capture_output=True, text=True, timeout=120)
         out = (r.stdout + r.stderr).strip()
         return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
-        return "Error: Timeout (120s)"
+        return ("Error: Timeout (120s). The command ran longer than 120s. "
+                "Re-run with run_in_background=true to let it continue detached, "
+                "then read its output with the task_output tool.")
+    except FileNotFoundError as e:
+        # bwrap on PATH at enabled()-check time but gone at run time.
+        return f"Error: sandbox binary not found: {e}"
+
+
+def run_task_output(task_id: str, timeout: int = 0) -> str:
+    """Read output from a background task. If timeout > 0, block up to that many
+    seconds for the task to finish (or more output to accumulate)."""
+    from agent_core.background import read_task_output
+    return read_task_output(task_id, float(timeout or 0))
+
+
+def run_task_stop(task_id: str) -> str:
+    """Kill a running background task (SIGTERM then SIGKILL on its process group)."""
+    from agent_core.background import stop_task
+    return stop_task(task_id)
+
+
+def run_task_list() -> str:
+    """List background tasks and their status."""
+    from agent_core.background import list_tasks as _list_tasks
+    return _list_tasks()
 
 def run_read(path: str, limit: int | None = None,
              offset: int = 0, cwd: Path = None) -> str:
@@ -58,16 +97,88 @@ def run_write(path: str, content: str, cwd: Path = None) -> str:
         return f"Error: {e}"
 
 def run_edit(path: str, old_text: str, new_text: str,
-             cwd: Path = None) -> str:
+             cwd: Path = None, replace_all: bool = False) -> str:
     try:
         fp = safe_path(path, cwd)
         text = fp.read_text()
         if old_text not in text:
             return f"Error: text not found in {path}"
-        fp.write_text(text.replace(old_text, new_text, 1))
-        return f"Edited {path}"
+        count = text.count(old_text)
+        if replace_all:
+            fp.write_text(text.replace(old_text, new_text))
+            return f"Edited {path} (replaced {count} occurrences)"
+        else:
+            fp.write_text(text.replace(old_text, new_text, 1))
+            return f"Edited {path} (replaced first of {count} occurrences)"
     except Exception as e:
         return f"Error: {e}"
+
+
+def run_web_fetch(url: str, prompt: str) -> str:
+    """Fetch a URL (15s timeout, 2MB cap, follow redirects, upgrade http→https),
+    strip HTML tags, return first ~8000 chars + a note that the prompt should be
+    applied by the caller."""
+    try:
+        # Upgrade http to https
+        if url.startswith("http://"):
+            url = url.replace("http://", "https://", 1)
+
+        # Set up request with timeout
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; Claude-Code-Agent/1.0)"
+            }
+        )
+
+        # Fetch with timeout
+        with urllib.request.urlopen(req, timeout=15) as response:
+            # Check content length
+            content_length = response.getheader("Content-Length")
+            if content_length and int(content_length) > 2 * 1024 * 1024:  # 2MB
+                return f"Error: Content too large ({content_length} bytes > 2MB limit)"
+
+            # Read content with size limit
+            content = response.read(2 * 1024 * 1024 + 1)  # Read up to 2MB + 1 byte
+            if len(content) > 2 * 1024 * 1024:
+                return "Error: Content exceeds 2MB limit"
+
+            # Decode
+            charset = response.headers.get_content_charset() or "utf-8"
+            try:
+                html = content.decode(charset, errors="replace")
+            except UnicodeDecodeError:
+                # Fallback to utf-8 with replacement
+                html = content.decode("utf-8", errors="replace")
+
+            # Basic HTML to text conversion
+            # Remove script and style tags and their content
+            html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+            html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+            # Remove HTML tags
+            text = re.sub(r'<[^>]+>', ' ', html)
+            # Normalize whitespace
+            text = re.sub(r'\s+', ' ', text).strip()
+
+            # Truncate to ~8000 chars
+            if len(text) > 8000:
+                text = text[:8000] + "... (truncated)"
+
+            return f"Fetched {len(text)} chars from {url}. Prompt to apply: \"{prompt[:100]}{'...' if len(prompt) > 100 else ''}\". Content:\n\n{text}"
+
+    except urllib.error.HTTPError as e:
+        return f"Error: HTTP {e.code} {e.reason}"
+    except urllib.error.URLError as e:
+        return f"Error: URL error: {e.reason}"
+    except socket.timeout:
+        return "Error: Timeout (15s)"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def run_web_search(query: str, max_results: int = 10) -> str:
+    """WebSearch not configured: set SEARCH_API_KEY or wire a search backend."""
+    return f"WebSearch not configured: set SEARCH_API_KEY or wire a search backend. Query was: \"{query}\" (max_results={max_results})"
 
 def run_glob(pattern: str, cwd: Path = None) -> str:
     import glob as g
@@ -78,6 +189,64 @@ def run_glob(pattern: str, cwd: Path = None) -> str:
             if (base / match).resolve().is_relative_to(base):
                 results.append(match)
         return "\n".join(results) if results else "(no matches)"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def run_grep(pattern: str, path: str = ".", output_mode: str = "content",
+             max_results: int = 200, cwd: Path = None) -> str:
+    """Content search with a regex, Claude-Code-Grep-style.
+
+    pattern: Python regex. path: file or dir to search (relative to workspace).
+    output_mode: "content" (default) prints file:line: match; "files_with_matches"
+    prints just filenames; "count" prints file: count.
+    Stays inside the workspace; skips .git, node_modules, .venv, __pycache__, .next.
+    """
+    import re
+    try:
+        base = cwd or workdir()
+        target = (base / path).resolve()
+        if not target.is_relative_to(base):
+            return f"Error: path escapes workspace: {path}"
+        regex = re.compile(pattern)
+        skip = {".git", "node_modules", ".venv", "__pycache__", ".next",
+                ".pytest_cache", ".task_outputs", ".transcripts"}
+        files = []
+        if target.is_file():
+            files = [target]
+        else:
+            for p in target.rglob("*"):
+                if not p.is_file():
+                    continue
+                if any(part in skip for part in p.parts):
+                    continue
+                files.append(p)
+        out = []
+        matches = 0
+        for fp in files:
+            try:
+                text = fp.read_text(errors="replace")
+            except Exception:
+                continue
+            local = str(fp.relative_to(base))
+            file_hits = 0
+            for i, line in enumerate(text.splitlines(), 1):
+                if regex.search(line):
+                    file_hits += 1
+                    matches += 1
+                    if output_mode == "content" and matches <= max_results:
+                        out.append(f"{local}:{i}: {line[:300]}")
+            if file_hits and output_mode == "files_with_matches":
+                out.append(local)
+            if file_hits and output_mode == "count":
+                out.append(f"{local}: {file_hits}")
+        if not out:
+            return "(no matches)"
+        if matches > max_results and output_mode == "content":
+            out.append(f"... ({matches - max_results} more matches, truncated at {max_results})")
+        return "\n".join(out)
+    except re.error as e:
+        return f"Error: invalid regex: {e}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -186,11 +355,32 @@ def run_connect_mcp(name: str, command: str = None,
     return connect_mcp(name, command=command, args=args, env=env)
 
 BUILTIN_TOOLS = [
-    {"name": "bash", "description": "Run a shell command.",
+    {"name": "bash", "description":
+     "Run a shell command. Foreground commands are capped at 120s. "
+     "Set run_in_background=true to run detached with NO timeout: the command "
+     "keeps running across turns and the agent is re-invoked when it exits. "
+     "Use task_output to read a background task's output, task_stop to kill it.",
      "input_schema": {"type": "object",
                       "properties": {"command": {"type": "string"},
                                      "run_in_background": {"type": "boolean"}},
                       "required": ["command"]}},
+    {"name": "task_output", "description":
+     "Read output from a background task started with bash(run_in_background=true). "
+     "If timeout > 0, block up to that many seconds for the task to finish or more "
+     "output to accumulate. Returns a status header plus the (tail-capped) output.",
+     "input_schema": {"type": "object",
+                      "properties": {"task_id": {"type": "string"},
+                                     "timeout": {"type": "integer"}},
+                      "required": ["task_id"]}},
+    {"name": "task_stop", "description":
+     "Kill a running background task (SIGTERM then SIGKILL on its process group).",
+     "input_schema": {"type": "object",
+                      "properties": {"task_id": {"type": "string"}},
+                      "required": ["task_id"]}},
+    {"name": "task_list", "description":
+     "List background tasks with their status (running/completed/killed), pid, "
+     "exit code, and command.",
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "read_file", "description": "Read file contents.",
      "input_schema": {"type": "object",
                       "properties": {"path": {"type": "string"},
@@ -202,15 +392,36 @@ BUILTIN_TOOLS = [
                       "properties": {"path": {"type": "string"},
                                      "content": {"type": "string"}},
                       "required": ["path", "content"]}},
-    {"name": "edit_file", "description": "Replace exact text in a file once.",
+    {"name": "edit_file", "description": "Replace exact text in a file.",
      "input_schema": {"type": "object",
                       "properties": {"path": {"type": "string"},
                                      "old_text": {"type": "string"},
-                                     "new_text": {"type": "string"}},
+                                     "new_text": {"type": "string"},
+                                     "replace_all": {"type": "boolean"}},
                       "required": ["path", "old_text", "new_text"]}},
+    {"name": "web_fetch", "description": "Fetch a URL (15s timeout, 2MB cap, follow redirects, upgrade http→https), strip HTML tags, return first ~8000 chars + a note that the prompt should be applied by the caller.",
+     "input_schema": {"type": "object",
+                      "properties": {"url": {"type": "string"},
+                                     "prompt": {"type": "string"}},
+                      "required": ["url", "prompt"]}},
+    {"name": "web_search", "description": "Search the web. Returns result blocks with titles and URLs. US-only.",
+     "input_schema": {"type": "object",
+                      "properties": {"query": {"type": "string"},
+                                     "max_results": {"type": "integer"}},
+                      "required": ["query"]}},
     {"name": "glob", "description": "Find files matching a glob pattern.",
      "input_schema": {"type": "object",
                       "properties": {"pattern": {"type": "string"}},
+                      "required": ["pattern"]}},
+    {"name": "grep", "description":
+     "Search file contents with a regex (Python re syntax). Returns file:line: match "
+     "lines by default. output_mode: 'content' | 'files_with_matches' | 'count'. "
+     "Stays inside the workspace; skips .git/node_modules/.venv/__pycache__/.next.",
+     "input_schema": {"type": "object",
+                      "properties": {"pattern": {"type": "string"},
+                                     "path": {"type": "string"},
+                                     "output_mode": {"type": "string"},
+                                     "max_results": {"type": "integer"}},
                       "required": ["pattern"]}},
     {"name": "todo_write",
      "description": "Create and manage a task list for the current session.",
@@ -222,9 +433,11 @@ BUILTIN_TOOLS = [
                                     "required": ["content", "status"]}}},
                       "required": ["todos"]}},
     {"name": "task",
-     "description": "Launch a focused subagent. Returns only its final summary.",
+     "description": "Launch a focused subagent. Returns only its final summary. "
+                    "Pass agent=<name> to use a defined subagent's prompt/tools/model.",
      "input_schema": {"type": "object",
-                      "properties": {"description": {"type": "string"}},
+                      "properties": {"description": {"type": "string"},
+                                     "agent": {"type": "string"}},
                       "required": ["description"]}},
     {"name": "load_skill",
      "description": "Load the full content of a skill by name.",
@@ -339,7 +552,10 @@ BUILTIN_TOOLS = [
 
 BUILTIN_HANDLERS = {
     "bash": run_bash, "read_file": run_read, "write_file": run_write,
-    "edit_file": run_edit, "glob": run_glob,
+    "edit_file": run_edit, "web_fetch": run_web_fetch, "web_search": run_web_search,
+    "glob": run_glob, "grep": run_grep,
+    "task_output": run_task_output, "task_stop": run_task_stop,
+    "task_list": run_task_list,
     "todo_write": run_todo_write, "task": spawn_subagent,
     "load_skill": load_skill,
     "create_task": run_create_task, "list_tasks": run_list_tasks,

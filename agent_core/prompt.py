@@ -3,6 +3,7 @@ from datetime import datetime
 from agent_core.env import workdir
 from agent_core.mcp import _mcp_clients
 from agent_core.skills import list_skills
+from agent_core.agents import scan_agents
 
 
 PROMPT_SECTIONS = {
@@ -28,6 +29,8 @@ def assemble_system_prompt(context: dict) -> str:
     sections.append(f"Current time: {datetime.now().isoformat(timespec='seconds')}")
     sections.append("Skills catalog:\n" + list_skills() +
                     "\nUse load_skill(name) when a skill is relevant.")
+    sections.append("Agents catalog:\n" + scan_agents() +
+                    "\nUse task(description=..., agent=<name>) to dispatch a defined agent.")
     if context.get("memories"):
         sections.append(f"Relevant memories:\n{context['memories']}")
     mcp_names = list(_mcp_clients().keys())

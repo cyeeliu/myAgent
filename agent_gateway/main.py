@@ -26,7 +26,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import code
 from agent_gateway.sessions import manager, GatewaySession
-from agent_gateway.schemas import CreateSession, UserMessage, PermissionResponse
+from agent_gateway.schemas import (
+    CreateSession, UserMessage, PermissionResponse,
+    AgentCreate, AgentUpdate, ModelConfig,
+)
+from agent_core import model_config
 from agent_gateway import sse, db, pipe as pipe_mod
 
 
@@ -179,9 +183,75 @@ async def interrupt(sid: str):
 
 # ── read-only dot-dir views ──
 
+@app.get("/api/health")
+async def health():
+    """Liveness + backend readiness. Reports DB/Redis as 'in_memory' when the
+    optional env vars are unset (graceful degradation, not a failure)."""
+    db_ok = db._pool is not None
+    redis_ok = pipe_mod.redis_enabled()
+    return {
+        "status": "ok",
+        "db": "postgres" if db_ok else "in_memory",
+        "redis": "redis" if redis_ok else "in_memory",
+        "model": os.environ.get("MODEL_ID", "?"),
+        "sessions_live": len(manager.all()),
+    }
+
+
 @app.get("/api/skills")
 async def get_skills():
     return code.scan_skills()
+
+
+# ── Agent definitions (.agents/<name>.json) ──
+@app.get("/api/agents")
+async def list_agents():
+    return code.list_agents()
+
+
+@app.post("/api/agents")
+async def create_agent(body: AgentCreate):
+    try:
+        return code.save_agent(body.name, body.description, body.prompt,
+                               body.model, body.tools)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/agents/{name}")
+async def update_agent(name: str, body: AgentUpdate):
+    try:
+        return code.save_agent(name, body.description, body.prompt,
+                               body.model, body.tools)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/agents/{name}")
+async def delete_agent(name: str):
+    try:
+        ok = code.delete_agent(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return {"ok": True}
+
+
+# ── Global model config (.agents/model.json) ──
+@app.get("/api/models")
+async def get_models():
+    """Current model config with api_key masked. The raw key never leaves this."""
+    return model_config.get_config_masked()
+
+
+@app.put("/api/models")
+async def update_models(body: ModelConfig):
+    """Persist model config. Empty api_key preserves the existing on-disk key.
+    Takes effect next turn (loop re-reads model_config.model() each round)."""
+    model_config.write_config(body.model_id, body.base_url,
+                              body.api_key, body.fallback_model)
+    return {"ok": True}
 
 
 @app.get("/api/mcp")

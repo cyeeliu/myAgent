@@ -62,6 +62,14 @@ from agent_core.skills import (
     load_skill,
     scan_skills,
 )
+from agent_core.agents import (
+    AGENTS_DIR,
+    delete_agent,
+    get_agent,
+    list_agents,
+    save_agent,
+    scan_agents,
+)
 from agent_core.tasks import (
     CURRENT_TODOS,
     Task,
@@ -132,6 +140,12 @@ from agent_core.compaction import (
     tool_result_budget,
     write_transcript,
 )
+from agent_core.sandbox import (
+    bwrap_available,
+    enabled as sandbox_enabled,
+    build_argv as sandbox_build_argv,
+)
+
 from agent_core.background import (
     _bg_counter,
     background_lock,
@@ -264,6 +278,9 @@ __all__ = [
     'BUS',
     'CLI_ACTIVE',
     'CONSOLIDATE_THRESHOLD',
+    'bwrap_available',
+    'sandbox_enabled',
+    'sandbox_build_argv',
     'CONTEXT_LIMIT',
     'CONTINUATION_PROMPT',
     'CURRENT_TODOS',
@@ -301,6 +318,7 @@ __all__ = [
     'RecoveryState',
     'SKILLS_DIR',
     'SKILL_REGISTRY',
+    'AGENTS_DIR',
     'SUB_HANDLERS',
     'SUB_SYSTEM',
     'SUB_TOOLS',
@@ -356,10 +374,15 @@ __all__ = [
     'large_output_hook',
     'list_memory_files',
     'list_skills',
+    'list_agents',
     'list_tasks',
     'load_durable_jobs',
     'load_memories',
     'load_skill',
+    'get_agent',
+    'save_agent',
+    'delete_agent',
+    'scan_agents',
     'load_task',
     'log_event',
     'log_hook',

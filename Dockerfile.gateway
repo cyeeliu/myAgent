@@ -9,6 +9,14 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
+# bubblewrap: filesystem sandbox for per-session bash (see agent_core/sandbox.py).
+# Each bash command runs under bwrap with only the session workdir (rw) + system
+# dirs (ro) visible, so the agent cannot read its own source / .env / .git via
+# absolute paths. Needs SYS_ADMIN + unconfined seccomp (set in docker-compose)
+# to create mount namespaces inside the container.
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap \
+ && rm -rf /var/lib/apt/lists/*
+
 # node + npm/npx copied from the local node:20-slim image (no network at build).
 # Lets the agent spawn npx-based MCP servers (gsearch, filesystem, …) via
 # connect_mcp(command="npx", args=["-y", "<pkg>", ...]). npx downloads packages

@@ -31,6 +31,9 @@ class TerminalSink(EventSink):
         elif kind == "permission_request":
             print(f"\n\033[33m[permission] {payload.get('reason')}\033[0m")
             print(f"  {payload.get('detail', '')}")
+        elif kind == "task_notification":
+            print(f"\033[33m[background] {payload.get('task_id','?')} done: "
+                  f"{str(payload.get('summary',''))[:120]}\033[0m")
 
 class ChannelSink(EventSink):
     # API: each event is enqueued as a frame {seq, kind, payload} on a
@@ -100,6 +103,9 @@ class Session:
     interrupted: bool = False
     workdir: object = None        # per-session WORKDIR (workspace/<sid>/); set by gateway
     mcp_clients: dict = field(default_factory=dict)  # per-session MCP connections
+    on_background_complete: object = None  # gateway hook: re-trigger the loop when
+                                           # a background task finishes after the
+                                           # turn ended. See GatewaySession.
     _seq: int = 0
 
     def append_both(self, msg: dict) -> None:

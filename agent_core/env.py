@@ -57,6 +57,14 @@ ESCALATED_MAX_TOKENS = 16000
 
 MAX_RETRIES = 3
 
+# Rate-limit (429) retries: provider rate limits need longer backoff than a
+# transient 529, so give 429 its own (generous) budget. 6 attempts with a 2s
+# base and exponential backoff capped at 60s ≈ up to ~2 min of waiting before
+# giving up, which absorbs normal rate-limit windows.
+MAX_RETRIES_429 = 6
+BASE_DELAY_429_MS = 2000
+MAX_DELAY_429_MS = 60000
+
 MAX_CONSECUTIVE_529 = 2
 
 MAX_RECOVERY_RETRIES = 2

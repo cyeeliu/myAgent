@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 import json
 from agent_core.blocks import _TextBlock, _ToolUseBlock, _block_attr, _block_type
-from agent_core.env import client
+from agent_core import model_config
 
 
 def _to_openai_messages(system, messages) -> list[dict]:
@@ -134,7 +134,7 @@ def chat_create(model, system=None, messages=None, tools=None,
         kwargs["tools"] = oai_tools
 
     if not stream:
-        resp = client.chat.completions.create(**kwargs)
+        resp = model_config.client().chat.completions.create(**kwargs)
         choice = resp.choices[0]
         msg = choice.message
         blocks = []
@@ -161,7 +161,7 @@ def chat_create(model, system=None, messages=None, tools=None,
     tool_calls: dict[int, dict] = {}
     finish_reason = None
     interrupted = False
-    for chunk in client.chat.completions.create(**kwargs):
+    for chunk in model_config.client().chat.completions.create(**kwargs):
         if events is not None and getattr(events, "interrupted", False):
             interrupted = True
             break
