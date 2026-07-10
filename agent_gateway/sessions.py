@@ -23,6 +23,8 @@ from typing import Any, Optional
 
 import code
 
+from .debug import debug
+
 _log = logging.getLogger(__name__)
 from code import Session, EventSink, FuturePermission
 from . import db
@@ -172,8 +174,9 @@ class PipeSink(EventSink):
 
     def emit(self, kind: str, payload: dict):
         seq = payload.get("seq", 0)
-        if kind in ("token", "done", "user", "tool_start", "tool_result", "error"):
-            _log.info("[WSDBUG] pipe<<emit kind=%r seq=%r", kind, seq)
+        if kind in ("token", "done", "user", "tool_start", "tool_result", "error",
+                    "history_message"):
+            debug("pipe<<emit kind=%r seq=%r", kind, seq)
         self._pipe.publish(seq, kind, payload)
 
 
@@ -228,6 +231,7 @@ class GatewaySession:
         Returns False if a turn is already in flight."""
         with self._worker_lock:
             if self._worker is not None and self._worker.is_alive():
+                debug("post_message rejected (in flight) sid=%r", self.session_id)
                 return False
             self.last_activity = time.time()
             user_msg = {"role": "user", "content": text}
@@ -245,15 +249,18 @@ class GatewaySession:
                                   daemon=True)
             self._worker = t
             t.start()
+            debug("post_message turn started sid=%r text_len=%d", self.session_id, len(text))
         return True
 
     def _run_turn(self):
+        debug("turn begin sid=%r seq=%r", self.session_id, getattr(self.agent, "_seq", 0))
         try:
             if self.agent.workdir is not None:
                 code.set_workdir(self.agent.workdir)
             with self.agent.lock:
                 code.agent_loop(self.agent)
         except Exception as e:  # never let the worker die silently
+            debug("turn CRASH sid=%r err=%s: %s", self.session_id, type(e).__name__, e)
             try:
                 self.agent.emit("error", {"error": f"agent_loop crashed: {type(e).__name__}: {e}"})
                 self.agent.emit("done", {"reason": "crash"})
@@ -276,6 +283,8 @@ class GatewaySession:
             # "in flight" after the turn has ended.
             with self._worker_lock:
                 self._worker = None
+            debug("turn end sid=%r seq=%r record_len=%d",
+                  self.session_id, getattr(self.agent, "_seq", 0), len(self.agent.record or []))
             # Race backstop: a background task may have completed between the
             # last inject_background_notifications pass and this point. Re-check
             # and, if anything is pending, start a follow-up turn to deliver it.

@@ -50,6 +50,8 @@ services:
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/myagent
       - REDIS_URL=redis://redis:6379/0
+      # Conversation-flow debug logging (agent_gateway/debug.py). 1/true to enable.
+      - AGENT_DEBUG=${AGENT_DEBUG:-0}
     volumes:
       - ${HOME}/.myAgent/workspace:/app/workspace
       # On-disk session artifacts (transcript.md / history.json) browsed by the

@@ -10,7 +10,6 @@ execution, keeping the agent_core boundary clean.
 """
 from __future__ import annotations
 import asyncio
-import logging
 from typing import Any, Optional
 
 import code
@@ -18,8 +17,7 @@ from agent_core import model_config
 
 from ..schema.agent import AgentRequest, AgentResponse
 from ..schema.message import ReqMethod, Mode
-
-logger = logging.getLogger(__name__)
+from ...debug import debug
 
 
 def _mode_str(req: AgentRequest) -> Optional[str]:
@@ -54,8 +52,8 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
         if not isinstance(text, str):
             text = str(text)
         ok_flag = gs.post_message(text)
-        logger.info("[WSDBUG] chat.send posted sid=%r seq_now=%r ok=%s",
-                    sid, getattr(gs.agent, "_seq", 0), ok_flag)
+        debug("chat.send posted sid=%r seq_now=%r ok=%s",
+              sid, getattr(gs.agent, "_seq", 0), ok_flag)
         if not ok_flag:
             return AgentResponse(req.request_id, ok=False,
                                  error="a turn is already in flight")
@@ -168,8 +166,8 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
                 "page_idx": (params.get("page_idx") if isinstance(params, dict) else None) or 1,
             })
         page_idx = (params.get("page_idx") if isinstance(params, dict) else None) or 1
-        logger.info("[WSDBUG] history.get sid=%r seq_now=%r record_len=%d",
-                    sid, getattr(gs.agent, "_seq", 0), len(gs.agent.record or []))
+        debug("history.get sid=%r seq_now=%r record_len=%d",
+              sid, getattr(gs.agent, "_seq", 0), len(gs.agent.record or []))
         # Stream the conversation as history.message events (one per record),
         # finalized with a status:'done' frame — this is the contract the
         # jiuwenswarm frontend's beginHistoryRestore subscribes to. The RPC
@@ -423,8 +421,8 @@ def _emit_history_stream(gs, page_idx: int) -> None:
         "page_idx": page_idx,
         "total_pages": 1,
     })
-    logger.info("[WSDBUG] history emitted sid=%r records=%d seq_now=%r",
-                sid, len(records), getattr(gs.agent, "_seq", 0))
+    debug("history emitted sid=%r records=%d seq_now=%r",
+          sid, len(records), getattr(gs.agent, "_seq", 0))
 
 
 def _list_sessions(sessions) -> list[dict]:

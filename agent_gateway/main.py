@@ -25,16 +25,7 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-# Ensure agent_gateway.* loggers emit INFO to stderr regardless of uvicorn's
-# default dictConfig (which only configures uvicorn.* loggers and leaves the
-# root at WARNING). Debug instrumentation under agent_gateway uses logger.info.
-_ag_log = logging.getLogger("agent_gateway")
-if not _ag_log.handlers:
-    _h = logging.StreamHandler()
-    _h.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
-    _ag_log.addHandler(_h)
-_ag_log.setLevel(logging.INFO)
-_ag_log.propagate = False
+from agent_gateway.debug import debug, is_enabled as _debug_enabled
 
 import code
 from agent_gateway.sessions import manager, GatewaySession
@@ -74,6 +65,7 @@ _heartbeat = HeartbeatService(interval=30.0)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    debug("gateway starting AGENT_DEBUG=%s", _debug_enabled())
     db.init_pool(os.environ.get("DATABASE_URL"))
     pipe_mod.init_redis(os.environ.get("REDIS_URL"))
     await _message_handler.start()

@@ -31,6 +31,7 @@ from ...common.e2a.agent_compat import execute_agent_request
 from ...common.schema.agent import AgentResponse
 from ...common.schema.message import ReqMethod
 from ...gateway_push.wire import frame_to_event
+from ...debug import debug
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ class WebChannel(BaseChannel):
     async def _handle_connection(self, ws: WebSocket, session_id: Optional[str],
                                  last_seq: int) -> None:
         await ws.accept()
-        logger.info("[WSDBUG] connect sid=%r last_seq=%r", session_id, last_seq)
+        debug("connect sid=%r last_seq=%r", session_id, last_seq)
         loop = asyncio.get_running_loop()
         # Connection state held in a mutable holder so _receiver can bind the
         # session's event drain mid-connection (the jiuwenswarm frontend keeps a
@@ -144,18 +145,18 @@ class WebChannel(BaseChannel):
         """Bind this connection to `sid`'s event pipe and start draining if we
         haven't already. Called when chat.send / session.create arrives with a
         session_id on a connection that wasn't bound at connect time."""
-        logger.info("[WSDBUG] _ensure_drain sid=%r bound_sid=%r has_task=%s last_seq=%r",
-                    sid, ctx.get("bound_sid"), ctx.get("sender_task") is not None, ctx.get("last_seq"))
+        debug("_ensure_drain sid=%r bound_sid=%r has_task=%s last_seq=%r",
+              sid, ctx.get("bound_sid"), ctx.get("sender_task") is not None, ctx.get("last_seq"))
         if not sid or sid == ctx.get("bound_sid") and ctx.get("sender_task") is not None:
-            logger.info("[WSDBUG] _ensure_drain early-return(1) sid=%r", sid)
+            debug("_ensure_drain early-return(1) sid=%r", sid)
             return
         gs = await asyncio.to_thread(self.sessions.get_or_hydrate, sid, loop)
         if gs is None:
-            logger.info("[WSDBUG] _ensure_drain no-session sid=%r", sid)
+            debug("_ensure_drain no-session sid=%r", sid)
             return
         # If already draining this same session, nothing to do.
         if ctx.get("bound_sid") == sid and ctx.get("sender_task") is not None:
-            logger.info("[WSDBUG] _ensure_drain already-bound sid=%r", sid)
+            debug("_ensure_drain already-bound sid=%r", sid)
             return
         # Cancel any previous drain (session switch) before starting a new one.
         prev = ctx.get("sender_task")
@@ -173,7 +174,7 @@ class WebChannel(BaseChannel):
         ctx["last_seq"] = start_seq
         ctx["sender_task"] = asyncio.create_task(
             self._drain_session(ws, gs, start_seq, self._make_outbound(ws)))
-        logger.info("[WSDBUG] _ensure_drain started drain sid=%r last_seq=%r", sid, start_seq)
+        debug("_ensure_drain started drain sid=%r last_seq=%r", sid, start_seq)
 
     async def _ensure_drain_live(self, ws: WebSocket, loop, ctx, sid: str) -> None:
         """Bind this connection to `sid`'s event pipe at the LIVE TAIL (no replay)
@@ -186,11 +187,11 @@ class WebChannel(BaseChannel):
             return
         gs = await asyncio.to_thread(self.sessions.get_or_hydrate, sid, loop)
         if gs is None:
-            logger.info("[WSDBUG] _ensure_drain_live no-session sid=%r", sid)
+            debug("_ensure_drain_live no-session sid=%r", sid)
             return
         # If already draining this same session, leave it — new events will flow.
         if ctx.get("bound_sid") == sid and ctx.get("sender_task") is not None:
-            logger.info("[WSDBUG] _ensure_drain_live already-bound sid=%r", sid)
+            debug("_ensure_drain_live already-bound sid=%r", sid)
             return
         prev = ctx.get("sender_task")
         if prev is not None:
@@ -203,7 +204,7 @@ class WebChannel(BaseChannel):
         ctx["last_seq"] = start_seq
         ctx["sender_task"] = asyncio.create_task(
             self._drain_session(ws, gs, start_seq, self._make_outbound(ws)))
-        logger.info("[WSDBUG] _ensure_drain_live started drain sid=%r start_seq=%r", sid, start_seq)
+        debug("_ensure_drain_live started drain sid=%r start_seq=%r", sid, start_seq)
 
     async def _receiver(self, ws: WebSocket, loop, ctx):
         """Inbound loop: parse req → dispatch → send res."""
@@ -234,7 +235,7 @@ class WebChannel(BaseChannel):
                 })
                 continue
             req = e2a_from_channel_request(env)
-            logger.info("[WSDBUG] req method=%r sid=%r", env.method.value, getattr(req, "session_id", None))
+            debug("req method=%r sid=%r", env.method.value, getattr(req, "session_id", None))
             # history.get streams the conversation as history.message events on
             # the session pipe; bind the drain to that session at the LIVE TAIL
             # before executing so those events reach the client (and without
@@ -249,6 +250,7 @@ class WebChannel(BaseChannel):
                 resp = AgentResponse(request_id=env.request_id, ok=False,
                                      error=f"{type(e).__name__}: {e}")
             await ws.send_json(encode_response(resp))
+            debug("res id=%r ok=%s method=%r", env.request_id, resp.ok, env.method.value)
             # history.get for a session that doesn't exist on the backend (e.g.
             # the frontend's client-generated fallback sess_ id before any
             # chat.send has self-healed it). There's no session pipe to carry
@@ -303,11 +305,11 @@ class WebChannel(BaseChannel):
         """Replay missed frames then drain the live EventPipe, mapping each to a
         jiuwenswarm-style event frame. Heartbeat on silence."""
         sid = gs.session_id
-        logger.info("[WSDBUG] drain start sid=%r last_seq=%r", sid, last_seq)
+        debug("drain start sid=%r last_seq=%r", sid, last_seq)
         try:
             last = last_seq
             _replay = gs.pipe.replay_since(last_seq)
-            logger.info("[WSDBUG] drain replay sid=%r count=%d", sid, len(_replay))
+            debug("drain replay sid=%r count=%d", sid, len(_replay))
             for frame in _replay:
                 # Skip ephemeral streaming kinds on replay. The frontend reconstructs
                 # past messages from history.get, not from re-streamed deltas; feeding
@@ -324,8 +326,8 @@ class WebChannel(BaseChannel):
                 if ev is not None:
                     ev["payload"] = {**ev.get("payload", {}), "replay": True}
                     await outbound_sub(ev)
-                    logger.info("[WSDBUG] drain>>replay sid=%r kind=%r seq=%r ev=%r",
-                                sid, frame.get("kind"), frame.get("seq"), ev.get("event"))
+                    debug("drain>>replay sid=%r kind=%r seq=%r ev=%r",
+                          sid, frame.get("kind"), frame.get("seq"), ev.get("event"))
                     last = max(last, frame.get("seq", last))
             last_beat = time.monotonic()
             async for tick in gs.pipe.live(last):
@@ -348,9 +350,10 @@ class WebChannel(BaseChannel):
                         ev["payload"] = {**ev.get("payload", {}),
                                          "session_id": sid}
                     await outbound_sub(ev)
-                    logger.info("[WSDBUG] drain>>live sid=%r kind=%r seq=%r ev=%r",
-                                sid, tick.get("kind"), tick.get("seq"), ev.get("event"))
+                    debug("drain>>live sid=%r kind=%r seq=%r ev=%r",
+                          sid, tick.get("kind"), tick.get("seq"), ev.get("event"))
                 gs.last_activity = time.time()
                 last_beat = time.monotonic()
         except Exception:
-            logger.exception("[WSDBUG] drain EXITED sid=%r", sid)
+            debug("drain EXITED sid=%r", sid)
+            logger.exception("drain exited sid=%r", sid)
