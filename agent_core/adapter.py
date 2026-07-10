@@ -1,8 +1,20 @@
 """agent_core.adapter — extracted from code.py (s20 comprehensive agent)."""
 from types import SimpleNamespace
 import json
+import os
+import time as _time
 from agent_core.blocks import _TextBlock, _ToolUseBlock, _block_attr, _block_type
 from agent_core import model_config
+
+_ADBG = os.environ.get("AGENT_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _adbg(fmt, *args):
+    if _ADBG:
+        try:
+            print("[ADBG] " + (fmt % args if args else fmt), flush=True)
+        except Exception:
+            print("[ADBG] %s", fmt, flush=True)
 
 
 def _to_openai_messages(system, messages) -> list[dict]:
@@ -161,13 +173,30 @@ def chat_create(model, system=None, messages=None, tools=None,
     tool_calls: dict[int, dict] = {}
     finish_reason = None
     interrupted = False
+    _t0 = _time.monotonic()
+    _chunk_no = 0
+    if _ADBG:
+        _adbg("stream call start model=%r msgs=%d tools=%d", model, len(oai_msgs), len(oai_tools))
     for chunk in model_config.client().chat.completions.create(**kwargs):
         if events is not None and getattr(events, "interrupted", False):
             interrupted = True
             break
+        _chunk_no += 1
         if not chunk.choices:
+            if _ADBG:
+                _adbg("chunk #%d t=%.3f no-choices", _chunk_no, _time.monotonic() - _t0)
             continue
         delta = chunk.choices[0].delta
+        # Reasoning models (GLM/DeepSeek/openpangu) carry thinking tokens in a
+        # separate field (reasoning_content / reasoning) — NOT in delta.content.
+        # Log it so the TTFT gap is explainable; we don't (yet) surface it to the UI.
+        if _ADBG and _chunk_no <= 5:
+            _rc = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            _adbg("chunk #%d t=%.3f content_len=%d reasoning_len=%d tool_calls=%s",
+                  _chunk_no, _time.monotonic() - _t0,
+                  len(getattr(delta, "content", None) or ""),
+                  len(_rc or ""),
+                  bool(getattr(delta, "tool_calls", None)))
         if getattr(delta, "content", None):
             text_parts.append(delta.content)
             if events is not None:

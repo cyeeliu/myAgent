@@ -39,7 +39,16 @@ def agent_loop(session: Session):
     set_current_session(session)
     messages = session.context_messages   # compactable LLM context (compaction mutates this only)
     context = session.context
+    import os as _os, time as _time
+    _DBG = _os.environ.get("AGENT_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+    _t = _time.monotonic()
+    def _phase(label):
+        nonlocal _t
+        if _DBG:
+            print(f"[ALOOP] {label} t={_time.monotonic()-_t:.3f}s", flush=True)
+        _t = _time.monotonic()
     tools, handlers = assemble_tool_pool()
+    _phase("assemble_tool_pool(init)")
     state = RecoveryState()
     max_tokens = DEFAULT_MAX_TOKENS
 
@@ -54,6 +63,7 @@ def agent_loop(session: Session):
         )
     except Exception:
         pass
+    _phase("load_memories")
 
     while True:
         # One cycle: inject scheduled/background work, prepare context, call
@@ -71,6 +81,7 @@ def agent_loop(session: Session):
             session.emit("text", {"text": f"  \033[35m[cron inject] {job.prompt[:60]}\033[0m"})
 
         inject_background_notifications(session)
+        _phase("cron+bg inject")
 
         if session.rounds_since_todo >= 3:
             session.append_both({"role": "user",
@@ -78,9 +89,11 @@ def agent_loop(session: Session):
             session.rounds_since_todo = 0
 
         prepare_context(messages)
+        _phase("prepare_context")
         context = update_context(context, messages)
         session.context = context
         tools, handlers = assemble_tool_pool()
+        _phase("update_context+assemble_tool_pool")
 
         try:
             response = call_llm(messages, context, tools, state, max_tokens,

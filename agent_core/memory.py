@@ -1,11 +1,28 @@
-"""agent_core.memory — extracted from code.py (s20 comprehensive agent)."""
+"""agent_core.memory — extracted from code.py (s20 comprehensive agent).
+
+Storage architecture:
+  - **Permanent storage**: `~/.myAgent/workspace/.memory/*.md` files (YAML
+    frontmatter + markdown body) + `MEMORY.md` index. The durable source of
+    truth; survives restarts, editable by hand, seeded by the gateway.
+  - **Real-time cache**: a module-level in-memory cache (`_MEM_CACHE`) of the
+    parsed files + index, invalidated by mtime. Every turn, `load_memories`
+    reads from the cache (O(1) after first load) instead of re-reading and
+    re-parsing every md file from disk. Writes (`write_memory_file`,
+    `consolidate_memories`) invalidate the cache; the next read reloads from
+    disk. The cache is per-process — lost on restart, rebuilt from the md
+    files on first access (which is the whole point: md is permanent, the
+    cache is the hot layer).
+"""
 import json
+import os
 import re
 import time
 from agent_core import adapter
 from agent_core.blocks import extract_text
 from agent_core.env import FALLBACK_MODEL, MODEL, workspace_dir
 
+
+_MEM_DBG = os.environ.get("AGENT_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
 
 MEMORY_TYPES = ["user", "feedback", "project", "reference"]
 
@@ -30,6 +47,82 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
             meta[k.strip()] = v.strip().strip('"').strip("'")
     return meta, parts[2].strip()
 
+# ── Real-time cache layer ──────────────────────────────────────────────
+# _MEM_CACHE holds the parsed memory files + index text + a snapshot of file
+# mtimes. It is refreshed from disk only when an mtime changes (or on first
+# access). This makes load_memories O(1) per turn regardless of file count.
+_MEM_CACHE: dict = {
+    "files": [],        # list[dict] — parsed {filename, name, description, type, body, raw}
+    "by_name": {},      # dict[filename -> raw text] — for read_memory_file
+    "index": "",        # str — MEMORY.md content
+    "mtimes": {},       # dict[filename -> mtime_ns] — invalidation key
+    "dir_mtime": None,  # entry-count check via glob is cheap; this is a fallback
+}
+
+
+def _invalidate_cache():
+    """Drop the cache so the next read reloads from disk."""
+    _MEM_CACHE["mtimes"] = {}
+    _MEM_CACHE["files"] = []
+    _MEM_CACHE["by_name"] = {}
+    _MEM_CACHE["index"] = ""
+
+
+def _refresh_cache_if_stale() -> None:
+    """Reload from disk if any md file's mtime changed or the cache is empty.
+    Cheap when fresh: one glob + stat per file, no file reads."""
+    mdir = _memory_dir()
+    if not mdir.exists():
+        _invalidate_cache()
+        return
+    # Snapshot current mtimes (MEMORY.md + every *.md except MEMORY.md).
+    files = sorted(mdir.glob("*.md"))
+    cur_mtimes = {}
+    for f in files:
+        try:
+            cur_mtimes[f.name] = f.stat().st_mtime_ns
+        except OSError:
+            continue
+    if cur_mtimes == _MEM_CACHE["mtimes"]:
+        if _MEM_DBG:
+            print(f"[MEMCACHE] hit files={len(_MEM_CACHE['files'])}", flush=True)
+        return  # cache is fresh — no disk reads
+    if _MEM_DBG:
+        print(f"[MEMCACHE] miss/reload files={len(files)} (was {len(_MEM_CACHE['files'])})",
+              flush=True)
+    # Stale or empty: reload everything.
+    parsed = []
+    by_name = {}
+    index_lines = []
+    for f in files:
+        if f.name == "MEMORY.md":
+            try:
+                _MEM_CACHE["index"] = f.read_text().strip()
+            except OSError:
+                _MEM_CACHE["index"] = ""
+            continue
+        try:
+            raw = f.read_text()
+        except OSError:
+            continue
+        meta, body = _parse_frontmatter(raw)
+        name = meta.get("name", f.stem)
+        desc = meta.get("description", body.split("\n")[0][:80])
+        parsed.append({
+            "filename": f.name,
+            "name": name,
+            "description": desc,
+            "type": meta.get("type", "user"),
+            "body": body,
+        })
+        by_name[f.name] = raw
+        index_lines.append(f"- [{name}]({f.name}) — {desc}")
+    _MEM_CACHE["files"] = parsed
+    _MEM_CACHE["by_name"] = by_name
+    _MEM_CACHE["index"] = "\n".join(index_lines)
+    _MEM_CACHE["mtimes"] = cur_mtimes
+
+
 def write_memory_file(name: str, mem_type: str, description: str, body: str):
     """Write one memory file with YAML frontmatter, then rebuild the index."""
     _memory_dir().mkdir(parents=True, exist_ok=True)
@@ -39,6 +132,7 @@ def write_memory_file(name: str, mem_type: str, description: str, body: str):
         f"---\nname: {name}\ndescription: {description}\ntype: {mem_type}\n---\n\n{body}\n"
     )
     _rebuild_index()
+    _invalidate_cache()
     return filepath
 
 def _rebuild_index():
@@ -58,35 +152,17 @@ def _rebuild_index():
     _memory_index().write_text("\n".join(lines) + "\n" if lines else "")
 
 def read_memory_index() -> str:
-    if not _memory_index().exists():
-        return ""
-    text = _memory_index().read_text().strip()
-    return text if text else ""
+    _refresh_cache_if_stale()
+    return _MEM_CACHE["index"]
 
 def read_memory_file(filename: str) -> str | None:
-    path = _memory_dir() / filename
-    if not path.exists():
-        return None
-    return path.read_text()
+    _refresh_cache_if_stale()
+    return _MEM_CACHE["by_name"].get(filename)
 
 def list_memory_files() -> list[dict]:
-    """All memory files with parsed frontmatter + body."""
-    result = []
-    if not _memory_dir().exists():
-        return result
-    for f in sorted(_memory_dir().glob("*.md")):
-        if f.name == "MEMORY.md":
-            continue
-        raw = f.read_text()
-        meta, body = _parse_frontmatter(raw)
-        result.append({
-            "filename": f.name,
-            "name": meta.get("name", f.stem),
-            "description": meta.get("description", ""),
-            "type": meta.get("type", "user"),
-            "body": body,
-        })
-    return result
+    """All memory files with parsed frontmatter + body (from cache)."""
+    _refresh_cache_if_stale()
+    return _MEM_CACHE["files"]
 
 def _block_text(block) -> str:
     """Extract text from a content block that may be a dict, SimpleNamespace,
@@ -277,6 +353,7 @@ def consolidate_memories() -> None:
                 f.unlink()
             except Exception:
                 pass
+    _invalidate_cache()
     for mem in items:
         name = mem.get("name", f"memory_{int(time.time())}")
         mem_type = mem.get("type", "user")
