@@ -1,18 +1,23 @@
-# Frontend: Next.js standalone build, served by `next start`.
-# Build-time NEXT_PUBLIC_GATEWAY_URL is baked into the client bundle.
+# Frontend: jiuwenswarm Vite app (vendored into frontend_vite/), built to static
+# dist/ and served by nginx. Same-origin in the browser — nginx (port 80) proxies
+# /api/ and /ws to the gateway and everything else to this container (port 3000).
 FROM node:20-slim AS build
 WORKDIR /app
 
-COPY frontend/package.json frontend/package-lock.json* /app/
+COPY frontend_vite/package.json /app/
 RUN npm install
 
-COPY frontend /app
-ARG NEXT_PUBLIC_GATEWAY_URL=http://localhost:8000
-ENV NEXT_PUBLIC_GATEWAY_URL=$NEXT_PUBLIC_GATEWAY_URL
+COPY frontend_vite /app
+# Same-origin: leave VITE_API_BASE/VITE_WS_BASE empty so webClient falls back to
+# window.location.host (nginx routes /api and /ws to the gateway).
+ARG VITE_API_BASE=
+ARG VITE_WS_BASE=
+ENV VITE_API_BASE=$VITE_API_BASE VITE_WS_BASE=$VITE_WS_BASE
 RUN npm run build
 
-FROM node:20-slim
-WORKDIR /app
-COPY --from=build /app /app
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 3000
-CMD ["npm", "run", "start"]
+# nginx:alpine default config serves /usr/share/nginx/html on port 80; remap to 3000.
+RUN sed -i 's/listen\s*80;/listen 3000;/' /etc/nginx/conf.d/default.conf
+CMD ["nginx", "-g", "daemon off;"]

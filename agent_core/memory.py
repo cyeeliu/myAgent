@@ -4,7 +4,7 @@ import re
 import time
 from agent_core import adapter
 from agent_core.blocks import extract_text
-from agent_core.env import FALLBACK_MODEL, MODEL, workdir
+from agent_core.env import FALLBACK_MODEL, MODEL, workspace_dir
 
 
 MEMORY_TYPES = ["user", "feedback", "project", "reference"]
@@ -12,7 +12,7 @@ MEMORY_TYPES = ["user", "feedback", "project", "reference"]
 CONSOLIDATE_THRESHOLD = 10
 
 def _memory_dir():
-    return workdir() / ".memory"
+    return workspace_dir() / ".memory"
 
 def _memory_index():
     return _memory_dir() / "MEMORY.md"

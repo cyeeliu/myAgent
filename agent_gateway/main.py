@@ -1,21 +1,22 @@
-"""FastAPI gateway for the myAgent core.
+"""FastAPI gateway for the myAgent core — jiuwenswarm-style architecture.
 
-Run from the myAgent directory (so code.py's WORKDIR = cwd picks up skills/
-and the dot-dirs):
+Boots:
+  - SessionManager (one agent_core Session per chat session; unchanged)
+  - MessageHandler (double-queue inbound routing)
+  - ChannelManager + WebChannel (method-routed WS at /ws)
+  - HeartbeatService (gateway liveness)
+  - REST routes (session list/create/delete, SSE, health, agents, models, skills)
+    kept for the existing frontend and SSE clients during the migration.
+
+agent_core is untouched; everything new lives in agent_gateway.common,
+channel_manager, message_handler, routing, heartbeat, gateway_push.
+
+Run from the myAgent directory:
     uvicorn agent_gateway.main:app --host 0.0.0.0 --port 8000
-
-Routes (spec §4):
-  POST /api/sessions                       create session (transport=ws|sse|auto)
-  WS   /api/sessions/{id}                  bidirectional event channel (?last_seq=N to resume)
-  GET  /api/sessions/{id}/status           session state + active transports
-  POST /api/sessions/{id}/messages         user message (REST fallback / SSE-mode input)
-  POST /api/sessions/{id}/permissions/{rid}/respond   permission response (SSE mode)
-  POST /api/sessions/{id}/interrupt        interrupt (SSE mode)
-  GET  /api/skills  /api/mcp   read-only dot-dir views
-SSE routes live in sse.py (spec §4.1).
 """
 from __future__ import annotations
 import asyncio
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -23,6 +24,17 @@ from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
+# Ensure agent_gateway.* loggers emit INFO to stderr regardless of uvicorn's
+# default dictConfig (which only configures uvicorn.* loggers and leaves the
+# root at WARNING). Debug instrumentation under agent_gateway uses logger.info.
+_ag_log = logging.getLogger("agent_gateway")
+if not _ag_log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    _ag_log.addHandler(_h)
+_ag_log.setLevel(logging.INFO)
+_ag_log.propagate = False
 
 import code
 from agent_gateway.sessions import manager, GatewaySession
@@ -33,18 +45,46 @@ from agent_gateway.schemas import (
 from agent_core import model_config
 from agent_gateway import sse, db, pipe as pipe_mod
 
+# New architecture
+from agent_gateway.channel_manager import ChannelManager
+from agent_gateway.channel_manager.web import WebChannel, WebChannelConfig, register_web_handlers
+from agent_gateway.message_handler import MessageHandler
+from agent_gateway.heartbeat import HeartbeatService
+
+
+# ── jiuwenswarm-style wiring (module level so /ws is registered at import) ──
+# The WebChannel only needs the module-level `manager` to mount its route;
+# services that need async start (MessageHandler loop, Heartbeat) are started
+# in the lifespan below.
+_message_handler = MessageHandler(manager)
+_channel_manager = ChannelManager()
+_channel_manager.set_message_handler(_message_handler)
+
+_web_channel = WebChannel(WebChannelConfig(
+    enabled=True,
+    host=os.environ.get("GATEWAY_HOST", "0.0.0.0"),
+    port=int(os.environ.get("GATEWAY_PORT", "8000")),
+    path="/ws",
+), sessions=manager, message_handler=_message_handler)
+register_web_handlers(_web_channel, manager)
+_channel_manager.register(_web_channel)
+
+_heartbeat = HeartbeatService(interval=30.0)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # DB is the durable source of truth; the in-memory dict is a live cache.
-    # If DATABASE_URL is unset, persistence degrades to no-op (in-memory only).
     db.init_pool(os.environ.get("DATABASE_URL"))
-    # Redis is the hot event pipe; if REDIS_URL is unset, falls back to in-proc
-    # queue+deque (InMemoryPipe).
     pipe_mod.init_redis(os.environ.get("REDIS_URL"))
+    await _message_handler.start()
+    await _channel_manager.start_all()
+    await _heartbeat.start()
     try:
         yield
     finally:
+        await _heartbeat.stop()
+        await _channel_manager.stop_all()
+        await _message_handler.stop()
         await pipe_mod.close_redis()
         db.close_pool()
 
@@ -56,6 +96,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount the WS route now that `app` exists (route registration at import time).
+_web_channel.mount(app)
 
 IDLE_TIMEOUT = 30 * 60           # 30 min idle session eviction (RAM only; DB row kept)
 _last_cleanup = time.time()
@@ -84,7 +127,7 @@ def _maybe_cleanup():
                 manager.drop(gs.session_id)
 
 
-# ── session lifecycle ──
+# ── session lifecycle (REST, kept for existing frontend / SSE clients) ──
 
 @app.post("/api/sessions")
 async def create_session(body: CreateSession = CreateSession()):
@@ -107,6 +150,7 @@ async def session_status(sid: str):
         "history_len": len(gs.agent.record),
     }
 
+
 @app.get("/api/sessions")
 async def list_sessions():
     """List all sessions (sidebar). DB is source of truth; live sessions overlay
@@ -127,6 +171,7 @@ async def list_sessions():
         by_sid[gs.session_id] = gs.meta()  # live is at least as fresh
     return sorted(by_sid.values(), key=lambda m: m["last_activity"], reverse=True)
 
+
 @app.delete("/api/sessions/{sid}")
 async def delete_session(sid: str):
     gs = manager.get(sid)
@@ -140,6 +185,8 @@ async def delete_session(sid: str):
 @app.websocket("/api/sessions/{sid}")
 async def ws_endpoint(ws: WebSocket, sid: str,
                       last_seq: int = Query(default=0, ge=0)):
+    """Legacy event-frame WS (kept for the existing frontend during migration).
+    New clients should use /ws (method-routed)."""
     loop = asyncio.get_running_loop()
     gs = await asyncio.to_thread(manager.get_or_hydrate, sid, loop)
     if gs is None:
@@ -276,3 +323,209 @@ async def get_mcp(sid: Optional[str] = None):
 
 # SSE routes registered by sse.py
 sse.register(app, manager)
+
+
+# ── file-api (REST file browser for the Sessions/Agent panels) ──
+# The jiuwenswarm frontend browses on-disk session artifacts via /file-api/*
+# (list-files, file-content). myAgent keeps conversation history in postgres,
+# not on disk, so per-session file dirs are usually empty — but the routes
+# must exist and return {files: []} for missing dirs instead of 404, else the
+# SessionsPanel shows "Failed to load session files". Rooted at REPO_ROOT with
+# path-traversal confinement; non-existent paths degrade to empty.
+import pathlib as _pathlib
+
+_FILE_API_ROOT = code.REPO_ROOT
+
+
+def _resolve_under_root(rel: str) -> Optional[_pathlib.Path]:
+    """Resolve a frontend-relative path under the file-api root, confining
+    traversal. Returns None if the resolved path escapes the root.
+
+    The AgentPanel browses the real mounted workspace (/app/workspace, from
+    ~/.myAgent/workspace) under the frontend prefix `agent/workspace/...`.
+    Rewrite that prefix to the real workspace so file previews resolve there."""
+    if not rel:
+        return _FILE_API_ROOT
+    _WS_PREFIX = "agent/workspace"
+    if rel == _WS_PREFIX or rel.startswith(_WS_PREFIX + "/"):
+        sub = "" if rel == _WS_PREFIX else rel[len(_WS_PREFIX) + 1:]
+        ws_root = (_FILE_API_ROOT / "workspace").resolve()
+        try:
+            full = (ws_root / sub).resolve() if sub else ws_root
+        except (OSError, ValueError):
+            return None
+        try:
+            full.relative_to(ws_root)
+        except ValueError:
+            return None
+        return full
+    try:
+        full = (_FILE_API_ROOT / rel).resolve()
+    except (OSError, ValueError):
+        return None
+    try:
+        full.relative_to(_FILE_API_ROOT.resolve())
+    except ValueError:
+        return None
+    return full
+
+
+@app.get("/file-api/list-files")
+async def file_api_list_files(dir: str = ""):
+    # Browsing a session's artifact dir: hydrate that session from the DB so
+    # transcript.md/history.json are refreshed from the current chat record
+    # (the DB is source of truth). `dir` looks like `agent/sessions/{sid}`.
+    if dir.startswith("agent/sessions/"):
+        sid = dir[len("agent/sessions/"):].strip("/")
+        if sid:
+            loop = asyncio.get_running_loop()
+            gs = await asyncio.to_thread(manager.get_or_hydrate, sid, loop)
+            # get_or_hydrate returns a cached session without re-writing files,
+            # so refresh them explicitly from the live record every browse.
+            if gs is not None:
+                from agent_gateway.sessions import _write_session_files
+                await asyncio.to_thread(_write_session_files, sid, gs.agent.record)
+    full = _resolve_under_root(dir)
+    if full is None:
+        raise HTTPException(status_code=403, detail="forbidden_dir")
+    if not full.exists() or not full.is_dir():
+        return {"files": []}
+    files = []
+    try:
+        entries = sorted(full.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    except OSError:
+        return {"files": []}
+    for entry in entries:
+        try:
+            rel = entry.relative_to(_FILE_API_ROOT)
+        except ValueError:
+            continue
+        files.append({
+            "name": entry.name,
+            "path": str(rel),
+            "isMarkdown": entry.suffix.lower() == ".md" if entry.is_file() else False,
+            "isDirectory": entry.is_dir(),
+        })
+    return {"files": files}
+
+
+@app.get("/file-api/file-content")
+async def file_api_file_content(path: str = "", encoding: str = "utf-8"):
+    from fastapi import Response
+    full = _resolve_under_root(path)
+    if full is None:
+        raise HTTPException(status_code=403, detail="forbidden_path")
+    if not full.exists() or not full.is_file():
+        raise HTTPException(status_code=404, detail="file_not_found")
+    try:
+        data = full.read_text(encoding=encoding)
+    except LookupError:
+        # "auto" (or any unknown codec the frontend FileViewer sends): sniff the
+        # encoding from the bytes, falling back to a tolerant utf-8 decode so the
+        # preview never 500s. Mirrors jiuwenswarm's charset_normalizer behavior
+        # without adding the dependency.
+        try:
+            raw = full.read_bytes()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        data = _decode_auto(raw)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return Response(content=data.encode("utf-8"), media_type="text/plain; charset=utf-8")
+
+
+def _decode_auto(raw: bytes) -> str:
+    """Best-effort decode for encoding='auto'. Try utf-8 strict first, then a
+    list of common legacy encodings, finally utf-8 with replacement so the
+    preview always renders something instead of erroring."""
+    for enc in ("utf-8", "gbk", "gb2312", "big5", "shift_jis", "euc_kr", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+@app.post("/file-api/rebuild-agent-data")
+async def file_api_rebuild_agent_data():
+    """Generate agent/workspace/agent-data.json (Record<folder_key, FileInfo[]>)
+    for the jiuwenswarm AgentPanel file browser by walking the REAL mounted
+    workspace (/app/workspace ← ~/.myAgent/workspace). The frontend browses it
+    under the `agent/workspace/...` prefix; _resolve_under_root rewrites that
+    prefix to the real workspace, and file display paths keep the prefix so
+    previews resolve back through the same rewrite."""
+    try:
+        await asyncio.to_thread(_rebuild_agent_data)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"ok": True}
+
+
+def _rebuild_agent_data() -> None:
+    import json as _json
+    import shutil
+    ws_root = (_FILE_API_ROOT / "workspace").resolve()
+    ws_root.mkdir(parents=True, exist_ok=True)
+
+    # ── per-workspace skills: seed from presets (/app/skills/*) if missing.
+    # Each workspace owns its copy (copy-if-missing preserves user edits); new
+    # presets are seeded on the next rebuild. ──
+    skills_dst = ws_root / "skills"
+    skills_dst.mkdir(parents=True, exist_ok=True)
+    skills_src = _FILE_API_ROOT / "skills"
+    if skills_src.is_dir():
+        for d in sorted(skills_src.iterdir()):
+            if not d.is_dir():
+                continue
+            target = skills_dst / d.name
+            if not target.exists():
+                shutil.copytree(d, target)
+
+    # ── memory: .memory/ holds config json. Seed a default config once so the
+    # branch is visible even before the user adds entries. ──
+    mem_dir = ws_root / ".memory"
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    mem_cfg = mem_dir / "config.json"
+    if not mem_cfg.exists():
+        mem_cfg.write_text(_json.dumps({
+            "enabled": True,
+            "types": ["user", "feedback", "project", "reference"],
+            "consolidate_threshold": 10,
+            "index_file": "MEMORY.md",
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ── walk workspace → Record<folder_key, FileInfo[]> ──
+    # Skip hidden dirs/files except .memory (memory lives there). Other dot-dirs
+    # (.tasks/.worktrees/.transcripts/…) stay hidden to keep the tree clean.
+    folder_data: dict[str, list[dict]] = {}
+    for entry in sorted(ws_root.rglob("*")):
+        if not entry.is_file() or entry.name.startswith("."):
+            continue
+        parts = entry.relative_to(ws_root).parts
+        if any(p.startswith(".") and p != ".memory" for p in parts):
+            continue
+        if entry.name == "agent-data.json":
+            continue  # avoid self-reference
+        rel = entry.relative_to(ws_root).as_posix()
+        rel_parent = entry.parent.relative_to(ws_root).as_posix()
+        # folder_key mirrors getFolderKeyByFilePath('agent/' + parent): the
+        # parent path with the 'agent/' prefix stripped → 'workspace/<parent>'.
+        folder_key = "workspace" if rel_parent == "." else f"workspace/{rel_parent}"
+        display_path = f"agent/workspace/{rel}"
+        folder_data.setdefault(folder_key, []).append({
+            "name": entry.name,
+            "path": display_path,
+            "isMarkdown": entry.suffix.lower() in {".md", ".mdx"},
+        })
+    sorted_folder_data = {
+        k: sorted(v, key=lambda item: item["path"])
+        for k, v in sorted(folder_data.items(), key=lambda item: item[0])
+    }
+    (ws_root / "agent-data.json").write_text(
+        _json.dumps(sorted_folder_data, ensure_ascii=False, indent=2),
+        encoding="utf-8")
+
+
+@app.get("/file-api/ws-debug-config")
+async def file_api_ws_debug_config():
+    return {"wsDisableCompress": False}

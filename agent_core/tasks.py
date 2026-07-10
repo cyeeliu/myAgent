@@ -4,11 +4,11 @@ from dataclasses import dataclass, asdict, field
 import json
 import random
 import time
-from agent_core.env import workdir
+from agent_core.env import session_dir
 
 
 def _tasks_dir():
-    return workdir() / ".tasks"
+    return session_dir() / ".tasks"
 
 CURRENT_TODOS: list[dict] = []
 

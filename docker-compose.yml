@@ -52,6 +52,14 @@ services:
       - REDIS_URL=redis://redis:6379/0
     volumes:
       - ${HOME}/.myAgent/workspace:/app/workspace
+      # On-disk session artifacts (transcript.md / history.json) browsed by the
+      # SessionsPanel via /file-api. Persisted across container recreates.
+      - sessiondata:/app/agent/sessions
+      # Dev: mount live source so code changes apply on restart without a full
+      # rebuild (base images node:20-slim/python:3.12-slim aren't always pullable).
+      - ./agent_gateway:/app/agent_gateway:ro
+      - ./agent_core:/app/agent_core:ro
+      - ./code.py:/app/code.py:ro
     # bubblewrap sandbox (agent_core/sandbox.py) needs to create mount+user
     # namespaces inside the container, which docker's default seccomp/cap set
     # blocks. Relax just enough for bwrap; the gateway still binds 127.0.0.1
@@ -77,11 +85,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-      # NEXT_PUBLIC_GATEWAY_URL unset by default → frontend uses same-origin
-      # (window.location.origin), which is correct behind the nginx proxy.
-      # Set this only if you serve the frontend on a different origin than the API.
+      # VITE_API_BASE/VITE_WS_BASE unset by default → the Vite frontend uses
+      # same-origin (window.location.host), correct behind the nginx proxy.
+      # Set these only if the frontend is served on a different origin than the API.
       args:
-        NEXT_PUBLIC_GATEWAY_URL: ${NEXT_PUBLIC_GATEWAY_URL:-}
+        VITE_API_BASE: ${VITE_API_BASE:-}
+        VITE_WS_BASE: ${VITE_WS_BASE:-}
     ports:
       # Local debug only. Public traffic enters via nginx on :80.
       - "127.0.0.1:3000:3000"
@@ -103,3 +112,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  sessiondata:

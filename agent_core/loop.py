@@ -11,7 +11,7 @@ from agent_core.blocks import has_tool_use
 from agent_core.compaction import compact_history, reactive_compact
 from agent_core.context import build_user_content, inject_background_notifications, prepare_context, update_context
 from agent_core.cron import consume_cron_queue
-from agent_core.env import CONTINUATION_PROMPT, DEFAULT_MAX_TOKENS, ESCALATED_MAX_TOKENS, MAX_RECOVERY_RETRIES, set_workdir, terminal_print, workdir
+from agent_core.env import CONTINUATION_PROMPT, DEFAULT_MAX_TOKENS, ESCALATED_MAX_TOKENS, MAX_RECOVERY_RETRIES, session_dir, set_session_dir, terminal_print
 from agent_core.hooks import check_permission, trigger_hooks
 from agent_core.mcp import assemble_tool_pool, set_current_session
 from agent_core.memory import consolidate_memories, extract_memories, load_memories, read_memory_index
@@ -144,13 +144,15 @@ def agent_loop(session: Session):
             # Snapshot the record (append-only) so a subsequent turn appending
             # to it can't race the extraction.
             record_snapshot = list(session.record)
-            # workdir() is threading.local — capture it here and restore inside
-            # the background thread so memory writes land in the session's
-            # workspace, not the container cwd.
-            wd = workdir()
+            # session_dir() is threading.local and child threads don't inherit
+            # it — capture it here and restore inside the background thread so
+            # any session-bound state the memory path touches resolves to this
+            # session. (Memory itself writes to the shared workspace_dir(), which
+            # is global, so it needs no capture/restore.)
+            sd = session_dir()
 
             def _memory_background():
-                set_workdir(wd)
+                set_session_dir(sd)
                 try:
                     written = extract_memories(record_snapshot)
                     if written:

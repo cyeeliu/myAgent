@@ -1,9 +1,16 @@
 """agent_core.skills — extracted from code.py (s20 comprehensive agent)."""
 import yaml
-from agent_core.env import REPO_ROOT
+from agent_core.env import REPO_ROOT, workspace_dir
 
 
-SKILLS_DIR = REPO_ROOT / "skills"   # agent-level (shared), not per-session
+def _skills_dir():
+    """Per-workspace skills dir (shared across sessions). Lives under the
+    workspace root, not REPO_ROOT, so each mounted workspace owns its skills."""
+    return workspace_dir() / "skills"
+
+# Backward-compat alias (module-level, points at the default workspace's skills
+# dir at import time). Prefer _skills_dir() for runtime resolution.
+SKILLS_DIR = _skills_dir()
 
 SKILL_REGISTRY: dict[str, dict] = {}
 
@@ -21,9 +28,10 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 
 def scan_skills():
     SKILL_REGISTRY.clear()
-    if not SKILLS_DIR.exists():
+    skills_dir = _skills_dir()
+    if not skills_dir.exists():
         return []
-    for directory in sorted(SKILLS_DIR.iterdir()):
+    for directory in sorted(skills_dir.iterdir()):
         if not directory.is_dir():
             continue
         manifest = directory / "SKILL.md"

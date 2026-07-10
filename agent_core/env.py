@@ -14,24 +14,59 @@ except ImportError:
 
 REPO_ROOT = Path.cwd()
 
-_wd_local = threading.local()
+# ── Workspace vs session dirs ──
+# workspace_dir(): shared root, CWD for file ops/bash/MCP/subagents. Holds the
+#   shared, cross-session state — .memory/ and skills/. In gateway mode this is
+#   the mounted ~/.myAgent/workspace; in CLI mode it's REPO_ROOT (cwd at launch).
+# session_dir(): per-session (threading.local) root for session-bound state —
+#   .tasks/.transcripts/.task_outputs/.worktrees/.mailboxes/.scheduled_tasks.json.
+#   Defaults to workspace_dir() when no session is bound (CLI).
+# workdir(): alias for workspace_dir() — the CWD. Kept so the many call sites
+#   that use workdir() as "where bash/file-ops run" keep working unchanged.
+_WORKSPACE_ROOT = REPO_ROOT
+_sess_local = threading.local()
 
-def workdir():
-    """Per-thread working directory. Defaults to REPO_ROOT; a session's worker
-    thread overrides via set_workdir() so each session's .tasks/.memory/
-    .transcripts/… and file-tool ops live under workspace/<sid>/."""
-    return getattr(_wd_local, "workdir", REPO_ROOT)
+def workspace_dir():
+    """Shared workspace root. CWD for file ops/bash/MCP/subagents. Holds
+    .memory/ and skills/ (shared across all sessions)."""
+    return _WORKSPACE_ROOT
 
-def set_workdir(p):
+def set_workspace_dir(p):
+    global _WORKSPACE_ROOT
+    p = Path(p)
+    p.mkdir(parents=True, exist_ok=True)
+    for _sub in (".memory", "skills"):
+        (p / _sub).mkdir(parents=True, exist_ok=True)
+    _WORKSPACE_ROOT = p
+
+def session_dir():
+    """Per-session dir for session-bound state
+    (.tasks/.transcripts/.task_outputs/.worktrees/.mailboxes/.scheduled_tasks.json).
+    Defaults to workspace_dir() when no session is bound (CLI)."""
+    return getattr(_sess_local, "session", None) or _WORKSPACE_ROOT
+
+def set_session_dir(p):
     p = Path(p)
     p.mkdir(parents=True, exist_ok=True)
     for _sub in (".tasks", ".transcripts", ".task_outputs/tool-results",
-                 ".worktrees", ".mailboxes", ".memory"):
+                 ".worktrees", ".mailboxes"):
         (p / _sub).mkdir(parents=True, exist_ok=True)
-    _wd_local.workdir = p
+    _sess_local.session = p
 
+def workdir():
+    """CWD for file ops / bash / MCP / subagents. Alias for workspace_dir()."""
+    return workspace_dir()
+
+def set_workdir(p):
+    """Backward-compat entry point: bind the per-session dir to `p`. The shared
+    workspace is set separately via set_workspace_dir() (gateway does this once
+    at startup; CLI leaves it at the REPO_ROOT default)."""
+    set_session_dir(p)
+
+# CLI defaults: dot-dirs live under REPO_ROOT (= cwd at launch) until a session
+# binds a separate workspace/session pair via set_workdir().
 for _sub in (".tasks", ".transcripts", ".task_outputs/tool-results",
-             ".worktrees", ".mailboxes", ".memory"):
+             ".worktrees", ".mailboxes", ".memory", "skills"):
     (REPO_ROOT / _sub).mkdir(parents=True, exist_ok=True)
 
 client = OpenAI(
@@ -46,10 +81,10 @@ PRIMARY_MODEL = MODEL
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL_ID")
 
 def _transcript_dir():
-    return workdir() / ".transcripts"
+    return session_dir() / ".transcripts"
 
 def _tool_results_dir():
-    return workdir() / ".task_outputs" / "tool-results"
+    return session_dir() / ".task_outputs" / "tool-results"
 
 DEFAULT_MAX_TOKENS = 8000
 

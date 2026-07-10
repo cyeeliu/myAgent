@@ -1,0 +1,31 @@
+{
+  "network": {
+    "wsError": "WebSocket 连接失败",
+    "connectionClosed": "连接已关闭",
+    "connectionClosedWithCode": "连接已关闭（代码 {{code}}）",
+    "connectionUnavailable": "连接不可用，请稍后重试",
+    "requestTimeout": "请求超时",
+    "requestAborted": "请求已取消",
+    "requestFailed": "请求失败",
+    "reconnecting": "正在重连…",
+    "connected": "已连接",
+    "connecting": "连接中…"
+  },
+  "chat": {
+    "thinking": "思考中…",
+    "replying": "回复中…",
+    "tool": "调用工具",
+    "idle": "就绪",
+    "send": "发送",
+    "stop": "停止",
+    "placeholder": "给 myAgent 发消息…",
+    "disconnected": "连接已断开",
+    "turnInFlight": "回合进行中…"
+  },
+  "session": {
+    "new": "新建会话",
+    "delete": "删除会话",
+    "rename": "重命名",
+    "empty": "暂无会话"
+  }
+}

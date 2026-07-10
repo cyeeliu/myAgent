@@ -1,0 +1,31 @@
+{
+  "network": {
+    "wsError": "WebSocket connection failed",
+    "connectionClosed": "Connection closed",
+    "connectionClosedWithCode": "Connection closed (code {{code}})",
+    "connectionUnavailable": "Connection unavailable, please retry",
+    "requestTimeout": "Request timed out",
+    "requestAborted": "Request aborted",
+    "requestFailed": "Request failed",
+    "reconnecting": "Reconnecting…",
+    "connected": "Connected",
+    "connecting": "Connecting…"
+  },
+  "chat": {
+    "thinking": "Thinking…",
+    "replying": "Replying…",
+    "tool": "Running tool",
+    "idle": "Ready",
+    "send": "Send",
+    "stop": "Stop",
+    "placeholder": "Message myAgent…",
+    "disconnected": "Disconnected",
+    "turnInFlight": "Turn in progress…"
+  },
+  "session": {
+    "new": "New session",
+    "delete": "Delete session",
+    "rename": "Rename",
+    "empty": "No sessions"
+  }
+}

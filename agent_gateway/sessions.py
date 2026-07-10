@@ -11,14 +11,19 @@ pump via the EventPipe (see pipe.py). Postgres (db.py) holds durable history.
 """
 from __future__ import annotations
 import asyncio
+import json
+import logging
 import threading
 import time
 import uuid
 from concurrent.futures import Future
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 import code
+
+_log = logging.getLogger(__name__)
 from code import Session, EventSink, FuturePermission
 from . import db
 from . import pipe as pipe_mod
@@ -29,21 +34,86 @@ PERMISSION_TIMEOUT = 120.0
 # — skipped during replay synthesis so they don't render as user bubbles.
 CONTINUATION_PROMPT = "Continue from the previous response. Do not repeat completed work."
 
+# On-disk session artifacts root. The jiuwenswarm frontend's SessionsPanel browses
+# `agent/sessions/{sid}/` via the /file-api REST routes (rooted at REPO_ROOT);
+# writing the conversation here makes the file list non-empty and previewable.
+SESSION_FILES_ROOT = code.REPO_ROOT / "agent" / "sessions"
+
+# Session-bound state (.tasks/.transcripts/.task_outputs/.worktrees/.mailboxes/
+# .scheduled_tasks.json) lives under SESSION_STATE_ROOT/<sid>/ — a hidden
+# .sessions/ branch inside the mounted workspace. Nesting under the mount keeps
+# it persisted across container restarts (durable cron, worktrees), and the
+# leading-dot name keeps it out of the AgentPanel file browser (which skips
+# dot-dirs other than .memory). The shared workspace root is set once at import.
+code.set_workspace_dir(code.REPO_ROOT / "workspace")
+SESSION_STATE_ROOT = code.workspace_dir() / ".sessions"
+
 
 def _stringify(content: Any) -> str:
-    """Flatten a message content (str or list of blocks) to a plain string."""
+    """Flatten a message content (str or list of blocks) to a plain string.
+
+    Blocks may be dicts (hydrated from DB/JSON) or SimpleNamespace instances
+    (_TextBlock/_ToolUseBlock) when the session is live in memory, so use
+    _block_type/_block_attr instead of assuming dict shape."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         parts = []
         for b in content:
-            if isinstance(b, dict):
-                if code._block_type(b) == "text":
-                    parts.append(b.get("text", ""))
-                elif "text" in b:
-                    parts.append(b.get("text", ""))
+            if code._block_type(b) == "text":
+                parts.append(code._block_attr(b, "text", "") or "")
         return "".join(parts)
     return str(content)
+
+
+def _write_session_files(sid: str, record: list) -> None:
+    """Persist the conversation to `agent/sessions/{sid}/` as a readable
+    transcript.md and a raw history.json so the SessionsPanel file browser
+    (which browses that dir via /file-api) has previewable content. Best-effort:
+    failures are swallowed (the DB is the source of truth, not these files).
+
+    history.json is written in the shape the jiuwenswarm SessionsPanel preview
+    parser (parseHistoryTimelineEntry) expects: each user turn as
+    {role:"user", content:<str>, timestamp}, each assistant text as
+    {role:"assistant", event_type:"chat.final", content:<str>, timestamp}.
+    The raw agent_core record stores assistant content as a list of blocks with
+    no event_type, which the parser drops (normalizeFinalContent returns '' for
+    non-string content) — so the preview would show only user messages. We
+    flatten blocks to a string here."""
+    try:
+        out = SESSION_FILES_ROOT / sid
+        out.mkdir(parents=True, exist_ok=True)
+        lines: list[str] = []
+        history: list[dict] = []
+        base_ts = time.time()
+        idx = 0
+        for msg in record:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            content = msg.get("content")
+            if role == "user":
+                text = _stringify(content)
+                if not text.strip():
+                    continue
+                lines.append(f"## 🧑 User\n\n{text}\n")
+                history.append({"role": "user", "content": text,
+                                "timestamp": base_ts + idx})
+                idx += 1
+            elif role == "assistant":
+                text = _stringify(content)
+                if not text.strip():
+                    continue
+                lines.append(f"## 🤖 Assistant\n\n{text}\n")
+                history.append({"role": "assistant", "event_type": "chat.final",
+                                "content": text, "timestamp": base_ts + idx})
+                idx += 1
+        (out / "transcript.md").write_text("\n".join(lines) or "(empty session)", encoding="utf-8")
+        (out / "history.json").write_text(
+            json.dumps(history, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8")
+    except Exception:
+        pass
 
 
 def synthesize_frames(record: list) -> list[dict]:
@@ -66,14 +136,12 @@ def synthesize_frames(record: list) -> list[dict]:
                 frames.append({"seq": seq, "kind": "user", "payload": {"text": content, "seq": seq}})
             elif isinstance(content, list):
                 for b in content:
-                    if not isinstance(b, dict):
-                        continue
                     if code._block_type(b) == "tool_result":
                         seq += 1
                         frames.append({"seq": seq, "kind": "tool_result",
-                                       "payload": {"id": b.get("tool_use_id") or b.get("id"),
-                                                   "content": _stringify(b.get("content")),
-                                                   "blocked": bool(b.get("is_error")),
+                                       "payload": {"id": code._block_attr(b, "tool_use_id") or code._block_attr(b, "id"),
+                                                   "content": _stringify(code._block_attr(b, "content")),
+                                                   "blocked": bool(code._block_attr(b, "is_error")),
                                                    "seq": seq}})
         elif role == "assistant":
             if isinstance(content, str):
@@ -81,17 +149,17 @@ def synthesize_frames(record: list) -> list[dict]:
                 frames.append({"seq": seq, "kind": "token", "payload": {"text": content, "seq": seq}})
             elif isinstance(content, list):
                 for b in content:
-                    if not isinstance(b, dict):
-                        continue
-                    if b.get("type") == "text":
+                    bt = code._block_type(b)
+                    if bt == "text":
                         seq += 1
                         frames.append({"seq": seq, "kind": "token",
-                                       "payload": {"text": b.get("text", ""), "seq": seq}})
-                    elif code._block_type(b) == "tool_use":
+                                       "payload": {"text": code._block_attr(b, "text", ""), "seq": seq}})
+                    elif bt == "tool_use":
                         seq += 1
                         frames.append({"seq": seq, "kind": "tool_start",
-                                       "payload": {"id": b.get("id"), "name": b.get("name"),
-                                                   "input": b.get("input", {}), "seq": seq}})
+                                       "payload": {"id": code._block_attr(b, "id"),
+                                                   "name": code._block_attr(b, "name"),
+                                                   "input": code._block_attr(b, "input", {}), "seq": seq}})
     return frames
 
 
@@ -104,6 +172,8 @@ class PipeSink(EventSink):
 
     def emit(self, kind: str, payload: dict):
         seq = payload.get("seq", 0)
+        if kind in ("token", "done", "user", "tool_start", "tool_result", "error"):
+            _log.info("[WSDBUG] pipe<<emit kind=%r seq=%r", kind, seq)
         self._pipe.publish(seq, kind, payload)
 
 
@@ -200,6 +270,8 @@ class GatewaySession:
                 self.ctx_store.snapshot(self.agent.context_messages)
             except Exception:
                 pass  # persistence failure must not mask the turn result
+            # Refresh on-disk session files so the browser reflects the new turn.
+            _write_session_files(self.session_id, self.agent.record)
             # Clear the worker so the next post_message isn't rejected as
             # "in flight" after the turn has ended.
             with self._worker_lock:
@@ -255,8 +327,8 @@ class GatewaySession:
                 return c.strip()[:60] or "(new session)"
             if isinstance(c, list):
                 for b in c:
-                    if isinstance(b, dict) and b.get("type") == "text":
-                        t = (b.get("text") or "").strip()
+                    if code._block_type(b) == "text":
+                        t = (code._block_attr(b, "text", "") or "").strip()
                         if t:
                             return t[:60]
         return "(new session)"
@@ -294,7 +366,7 @@ class SessionManager:
                         sinks=[sink], permission=permission,
                         context=code.update_context({}, []))
         agent.record_sinks = [ChatRecordSink(chat_pipe)]
-        agent.workdir = code.REPO_ROOT / "workspace" / sid
+        agent.workdir = SESSION_STATE_ROOT / sid
         if chat_record:
             agent.record = list(chat_record)
             # llm_context may be missing on old/half-migrated rows; derive from
@@ -314,6 +386,9 @@ class SessionManager:
             # Re-seed the chat stream too if it expired (Redis lost the hot record).
             if chat_pipe.count() == 0:
                 chat_pipe.seed(agent.record)
+            # Materialize on-disk session files so the SessionsPanel file browser
+            # has previewable content for a hydrated (restored) session.
+            _write_session_files(sid, agent.record)
         gs = GatewaySession(session_id=sid, transport=agent.transport,
                             agent=agent, pipe=ep, chat_pipe=chat_pipe,
                             ctx_store=ctx_store, loop=loop,

@@ -3,11 +3,11 @@ from dataclasses import dataclass, asdict, field
 import json
 import random
 import time
-from agent_core.env import terminal_print, workdir
+from agent_core.env import session_dir, terminal_print
 
 
 def _mailbox_dir():
-    return workdir() / ".mailboxes"
+    return session_dir() / ".mailboxes"
 
 class MessageBus:
     def send(self, from_agent: str, to_agent: str, content: str,

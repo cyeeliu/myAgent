@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from agent_core.env import workdir
+from agent_core.env import session_dir, workdir
 from agent_core.hooks import trigger_hooks
 
 
@@ -44,7 +44,7 @@ def should_run_background(tool_name: str, tool_input: dict) -> bool:
 
 
 def _output_dir() -> Path:
-    d = workdir() / ".task_outputs"
+    d = session_dir() / ".task_outputs"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

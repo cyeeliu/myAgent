@@ -5,11 +5,11 @@ import json
 import random
 import threading
 import time
-from agent_core.env import workdir
+from agent_core.env import session_dir
 
 
 def _durable_path():
-    return workdir() / ".scheduled_tasks.json"
+    return session_dir() / ".scheduled_tasks.json"
 
 @dataclass
 class CronJob:

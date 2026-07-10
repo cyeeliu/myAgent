@@ -4,12 +4,12 @@ import json
 import re
 import subprocess
 import time
-from agent_core.env import workdir
+from agent_core.env import session_dir, workdir
 from agent_core.tasks import load_task, save_task
 
 
 def _worktrees_dir():
-    return workdir() / ".worktrees"
+    return session_dir() / ".worktrees"
 
 VALID_WT_NAME = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
 
