@@ -32,9 +32,18 @@ from . import pipe as pipe_mod
 
 PERMISSION_TIMEOUT = 120.0
 
-# Internal user prompts injected by the agent (max-tokens continuation, etc.)
-# — skipped during replay synthesis so they don't render as user bubbles.
+# Internal user prompts injected by the agent (max-tokens continuation, the
+# todo nudge, explicit-compaction markers) — skipped during replay synthesis
+# and session-file writing so they don't render as user bubbles in the UI.
 CONTINUATION_PROMPT = "Continue from the previous response. Do not repeat completed work."
+TODO_REMINDER_PREFIX = "<reminder>"
+
+
+def _is_internal_user_prompt(text: str) -> bool:
+    """True if this user message is an agent-internal nudge, not a real turn."""
+    return (text == CONTINUATION_PROMPT
+            or text.startswith("[Compacted.")
+            or text.startswith(TODO_REMINDER_PREFIX))
 
 # On-disk session artifacts root. The jiuwenswarm frontend's SessionsPanel browses
 # `agent/sessions/{sid}/` via the /file-api REST routes (rooted at REPO_ROOT);
@@ -98,6 +107,8 @@ def _write_session_files(sid: str, record: list) -> None:
                 text = _stringify(content)
                 if not text.strip():
                     continue
+                if _is_internal_user_prompt(text):
+                    continue  # agent-internal nudge, not a real user turn
                 lines.append(f"## 🧑 User\n\n{text}\n")
                 history.append({"role": "user", "content": text,
                                 "timestamp": base_ts + idx})
@@ -132,7 +143,7 @@ def synthesize_frames(record: list) -> list[dict]:
         content = msg.get("content")
         if role == "user":
             if isinstance(content, str):
-                if content == CONTINUATION_PROMPT or content.startswith("[Compacted."):
+                if _is_internal_user_prompt(content):
                     continue  # internal prompt, not a real user turn
                 seq += 1
                 frames.append({"seq": seq, "kind": "user", "payload": {"text": content, "seq": seq}})
