@@ -18,6 +18,7 @@ from agent_core import model_config
 from ..schema.agent import AgentRequest, AgentResponse
 from ..schema.message import ReqMethod, Mode
 from ...debug import debug
+from ... import skill_marketplaces as mp
 
 
 def _mode_str(req: AgentRequest) -> Optional[str]:
@@ -223,8 +224,58 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
         return AgentResponse(req.request_id, payload={"skills": code.scan_skills()})
     if m == ReqMethod.SKILLS_GET:
         name = params.get("name", "")
-        skill = code.load_skill(name) if name else None
-        return AgentResponse(req.request_id, payload={"skill": skill})
+        skill = code.get_skill(name) if name else None
+        return AgentResponse(req.request_id, payload=skill or {})
+    if m == ReqMethod.SKILLS_TOGGLE:
+        return AgentResponse(req.request_id, payload=code.set_skill_enabled(
+            params.get("name", ""), bool(params.get("enabled", True))))
+    if m == ReqMethod.SKILLS_UNINSTALL:
+        return AgentResponse(req.request_id, payload=code.uninstall_skill(params.get("name", "")))
+    if m == ReqMethod.SKILLS_INSTALL:
+        return AgentResponse(req.request_id, payload=code.install_skill(
+            params.get("spec", ""), bool(params.get("force", False))))
+    if m == ReqMethod.SKILLS_IMPORT_LOCAL:
+        return AgentResponse(req.request_id, payload=code.import_local_skill(
+            params.get("path", ""), bool(params.get("force", False))))
+    if m == ReqMethod.SKILLS_MARKETPLACE_LIST:
+        return AgentResponse(req.request_id, payload=code.list_marketplaces())
+    # ── online marketplaces (clawhub.ai / SkillNet via GitHub search) ──
+    if m == ReqMethod.SKILLS_CLAWHUB_SEARCH:
+        res = await asyncio.to_thread(mp.clawhub_search, params.get("q", ""), int(params.get("limit", 50)))
+        return AgentResponse(req.request_id, payload=res)
+    if m == ReqMethod.SKILLS_CLAWHUB_DOWNLOAD:
+        res = await asyncio.to_thread(mp.clawhub_download, params.get("slug", ""), bool(params.get("force", False)), params.get("meta"))
+        return AgentResponse(req.request_id, payload=res)
+    if m == ReqMethod.SKILLS_CLAWHUB_GET_TOKEN:
+        return AgentResponse(req.request_id, payload=mp.clawhub_get_token())
+    if m == ReqMethod.SKILLS_CLAWHUB_SET_TOKEN:
+        return AgentResponse(req.request_id, payload=mp.clawhub_set_token(params.get("token", "")))
+    if m == ReqMethod.SKILLS_SKILLNET_SEARCH:
+        res = await asyncio.to_thread(mp.skillnet_search, params.get("q", ""), int(params.get("limit", 20)))
+        return AgentResponse(req.request_id, payload=res)
+    if m == ReqMethod.SKILLS_SKILLNET_INSTALL:
+        res = await asyncio.to_thread(mp.skillnet_install, params.get("url", ""), bool(params.get("force", False)), params.get("meta"))
+        return AgentResponse(req.request_id, payload=res)
+    if m == ReqMethod.SKILLS_SKILLNET_INSTALL_STATUS:
+        return AgentResponse(req.request_id, payload=mp.skillnet_install_status(params.get("install_id", "")))
+    if m == ReqMethod.SKILLS_SKILLNET_EVALUATE:
+        return AgentResponse(req.request_id, payload=mp.skillnet_evaluate(params.get("url", "")))
+    if m == ReqMethod.SKILLS_TEAMSKILLS_SEARCH:
+        res = await asyncio.to_thread(mp.teamskills_search, params.get("q", ""), int(params.get("limit", 50)))
+        return AgentResponse(req.request_id, payload=res)
+    if m == ReqMethod.SKILLS_TEAMSKILLS_INSTALL:
+        res = await asyncio.to_thread(mp.teamskills_install, params.get("asset_id", ""), bool(params.get("force", False)))
+        return AgentResponse(req.request_id, payload=res)
+    if m == ReqMethod.SKILLS_TEAMSKILLS_INFO:
+        return AgentResponse(req.request_id, payload=mp.teamskills_info())
+    if m == ReqMethod.SKILLS_SKILLHUB_SEARCH:
+        res = await asyncio.to_thread(mp.skillhub_search, params.get("q", ""), int(params.get("limit", 50)))
+        return AgentResponse(req.request_id, payload=res)
+    if m == ReqMethod.SKILLS_SKILLHUB_INSTALL:
+        res = await asyncio.to_thread(mp.skillhub_install, params.get("asset_id", ""), bool(params.get("force", False)), params.get("meta"))
+        return AgentResponse(req.request_id, payload=res)
+    if m == ReqMethod.SKILLS_SKILLHUB_INFO:
+        return AgentResponse(req.request_id, payload=mp.skillhub_info())
 
     # ── agents ──
     if m == ReqMethod.AGENTS_LIST:
@@ -270,6 +321,10 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
             return AgentResponse(req.request_id, ok=False, error=str(e))
         return AgentResponse(req.request_id, payload={"files": entries, "path": path})
 
+    # ── runtime status: process RSS + used % for the ToolPanel status card ──
+    if m == ReqMethod.MEMORY_COMPUTE:
+        return AgentResponse(req.request_id, payload=_memory_compute())
+
     # ── tts (stub — agent_core has no TTS; return empty so the UI degrades) ──
     if m == ReqMethod.TTS_SYNTHESIZE:
         return AgentResponse(req.request_id, payload={"success": False, "reason": "no_tts"})
@@ -300,6 +355,36 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
 def _now() -> float:
     import time
     return time.time()
+
+
+def _memory_compute() -> dict:
+    """Process RSS (MB) + used % of system RAM for the ToolPanel status card.
+
+    Stdlib only (resource + /proc/meminfo) so no psutil dep. ru_maxrss is KB on
+    Linux. Never raises — on any failure the card degrades to '—' (nulls)."""
+    try:
+        import resource
+        rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        rss_mb = round(rss_kb / 1024.0, 1)
+    except Exception:
+        rss_mb = None
+    used_percent = None
+    try:
+        if rss_mb is not None:
+            total_kb = None
+            try:
+                with open("/proc/meminfo", "r") as f:
+                    for line in f:
+                        if line.startswith("MemTotal:"):
+                            total_kb = int(line.split()[1])
+                            break
+            except Exception:
+                total_kb = None
+            if total_kb and total_kb > 0:
+                used_percent = round((rss_kb / total_kb) * 100.0, 1)
+    except Exception:
+        used_percent = None
+    return {"rss_mb": rss_mb, "used_percent": used_percent}
 
 
 def _stringify_content(content: Any) -> str:

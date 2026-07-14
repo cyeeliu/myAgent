@@ -181,20 +181,30 @@ def _msg_text(msg) -> str:
         return " ".join(_block_text(b) for b in c)
     return str(c)
 
-def _memory_llm(prompt: str, max_tokens: int = 800) -> str:
+def _memory_llm(prompt: str, max_tokens: int = 800, timeout: int = 8) -> str:
     """One-shot non-streaming text call for memory selection/extraction/consolidation.
-    Uses the primary model, falling back to FALLBACK_MODEL on error. Never raises."""
+    Uses the primary model, falling back to FALLBACK_MODEL on error. Never raises.
+    Hard `timeout` (default 8s) so a slow reasoning model can't stall the turn
+    — memory is best-effort, never worth a 20s block."""
     for model in (MODEL, FALLBACK_MODEL):
         if not model:
             continue
         try:
             resp = adapter.chat_create(model=model,
                                messages=[{"role": "user", "content": prompt}],
-                               max_tokens=max_tokens)
+                               max_tokens=max_tokens, timeout=timeout)
             return extract_text(resp.content)
         except Exception:
             continue
     return ""
+
+# Below this catalog size, skip the LLM selection round-trip and inject every
+# memory file. The selection call is only worthwhile once the catalog is large
+# enough that injecting everything would bloat the system prompt. The previous
+# threshold (5) made a 7-file catalog pay a ~20s glm-5 call every turn — the
+# slow-reply bottleneck. 12 keeps small workspaces instant with negligible
+# prompt bloat (memories are short .md files).
+_MEMORY_LLM_SELECTION_THRESHOLD = 12
 
 def select_relevant_memories(messages: list, max_items: int = 5) -> list[str]:
     """Pick memory filenames relevant to the recent dialogue (LLM, with a
@@ -220,7 +230,7 @@ def select_relevant_memories(messages: list, max_items: int = 5) -> list[str]:
     # With few memories, skip the LLM selection round-trip and just inject all.
     # The selection call is only worthwhile once the catalog is large enough
     # that injecting everything would bloat the system prompt.
-    if len(files) <= max_items:
+    if len(files) <= _MEMORY_LLM_SELECTION_THRESHOLD:
         return [f["filename"] for f in files]
     out = _memory_llm(
         "Given the recent conversation and the memory catalog below, "

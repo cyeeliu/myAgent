@@ -66,6 +66,14 @@ _heartbeat = HeartbeatService(interval=30.0)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     debug("gateway starting AGENT_DEBUG=%s", _debug_enabled())
+    # Seed per-workspace skills (copy-if-missing from /app/skills/*) and build
+    # agent-data.json on startup so the SkillPanel/AgentPanel have content
+    # without waiting for the frontend to POST /file-api/rebuild-agent-data.
+    # Best-effort: a failure here must not block gateway startup.
+    try:
+        await asyncio.to_thread(_rebuild_agent_data)
+    except Exception as exc:  # noqa: BLE001
+        debug("startup _rebuild_agent_data failed: %s", exc)
     db.init_pool(os.environ.get("DATABASE_URL"))
     pipe_mod.init_redis(os.environ.get("REDIS_URL"))
     await _message_handler.start()

@@ -10,7 +10,7 @@ import { webRequest } from "../../services/webClient";
 import { SourceManagerModal } from "../../features/SourceManagerModal";
 import { SkillNetSearchModal } from "../../features/SkillNetSearchModal";
 import { ClawHubSearchModal } from "../../features/ClawHubSearchModal";
-import { TeamSkillsHubModal } from "../../features/TeamSkillsHubModal";
+import { SkillHubSearchModal } from "../../features/SkillHubSearchModal";
 import { SkillEvolutionModal } from "../../features/SkillEvolutionModal";
 import { normalizeSkillNetUrl } from "../../utils/skillNetUrl";
 import { SkillGraphPanel, type SkillGraphPanelHandle } from "../SkillGraphPanel";
@@ -28,10 +28,10 @@ const GRAPH_READING_MIN_VISIBLE_MS = 500;
 const ONLINE_SOURCE_STORAGE_KEY = "jiuwen:online_source";
 
 /** 获取保存的在线源 */
-function getSavedOnlineSource(): "skillnet" | "clawhub" {
+function getSavedOnlineSource(): "skillnet" | "clawhub" | "skillhub" {
   try {
     const saved = localStorage.getItem(ONLINE_SOURCE_STORAGE_KEY);
-    if (saved === "skillnet" || saved === "clawhub") {
+    if (saved === "skillnet" || saved === "clawhub" || saved === "skillhub") {
       return saved;
     }
   } catch {
@@ -44,6 +44,10 @@ type SkillItem = {
   name: string;
   description: string;
   source: string;
+  /** Marketplace origin (clawhub/skillhub/skillnet) for display when installed
+   * from an online source. `source` stays "local" so the my-skills filter
+   * (which keys on source==="local") still shows installed marketplace skills. */
+  marketplace_source?: string;
   version: string;
   author: string;
   tags: string[];
@@ -149,7 +153,16 @@ interface SkillPanelProps {
   isActive?: boolean;
 }
 
-function getSourceLabel(source: string, t: (key: string) => string, isBuiltinSource?: boolean): string {
+function getSourceLabel(source: string, t: (key: string) => string, isBuiltinSource?: boolean, marketplaceSource?: string): string {
+  if (marketplaceSource === "clawhub") return t('skills.source.clawhub');
+  if (marketplaceSource === "skillhub") return t('skills.source.skillhub');
+  if (marketplaceSource === "skillnet") return t('skills.source.skillnet');
+  // An unknown marketplace (a new source added later) — show its raw name
+  // capitalized instead of mislabeling it "builtin". This is the "新的源就不
+  // 显示了" robustness the user asked for.
+  if (marketplaceSource && marketplaceSource.trim()) {
+    return marketplaceSource.charAt(0).toUpperCase() + marketplaceSource.slice(1);
+  }
   if (isBuiltinSource) return t('skills.source.builtin');
   if (source === "local") return t('skills.source.local');
   if (source === "project") return t('skills.source.project');
@@ -584,8 +597,8 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<"my" | "marketplace" | "index" | "graph">("my");
   const [mySkillsSubTab, setMySkillsSubTab] = useState<"all" | "enabled" | "disabled">("all");
-  const [marketplaceSubTab, setMarketplaceSubTab] = useState<"builtin" | "swarmskills" | "online">("builtin");
-  const [onlineSource, setOnlineSource] = useState<"skillnet" | "clawhub">(getSavedOnlineSource);
+  const [marketplaceSubTab, setMarketplaceSubTab] = useState<"builtin" | "online">("builtin");
+  const [onlineSource, setOnlineSource] = useState<"skillnet" | "clawhub" | "skillhub">(getSavedOnlineSource);
   const [searchTrigger, setSearchTrigger] = useState(0);
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [plugins, setPlugins] = useState<InstalledPluginItem[]>([]);
@@ -689,7 +702,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
   const [sourceModalOpen, setSourceModalOpen] = useState(false);
   const [skillNetModalOpen, setSkillNetModalOpen] = useState(false);
   const [clawHubModalOpen, setClawHubModalOpen] = useState(false);
-  const [teamSkillsHubModalOpen, setTeamSkillsHubModalOpen] = useState(false);
   const [evolutionModalOpen, setEvolutionModalOpen] = useState(false);
   const [evolutionSkillName, setEvolutionSkillName] = useState<string | null>(null);
   const withSession = useCallback(
@@ -699,6 +711,19 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
     }),
     [sessionId]
   );
+
+  // Prefetch the 3 online source listings when the marketplace tab opens, so the
+  // backend cache is warm before the user picks a source. Fire-and-forget; the
+  // backend TTL cache (+ SWR) makes these free after the first warm. Without this
+  // the first click into each source pays the upstream latency (clawhub ~2-3s).
+  const onlinePrefetchedRef = useRef(false);
+  useEffect(() => {
+    if (activeTab !== "marketplace" || onlinePrefetchedRef.current) return;
+    onlinePrefetchedRef.current = true;
+    for (const method of ["skills.skillhub.search", "skills.clawhub.search", "skills.skillnet.search"] as const) {
+      void webRequest(method, withSession({ q: "", limit: 50 })).catch(() => {});
+    }
+  }, [activeTab, withSession]);
 
   const installedSkillMap = useMemo(() => {
     const map = new Map<string, InstalledPluginItem>();
@@ -732,12 +757,10 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
   const filteredSkills = useMemo(() => {
     let result = skills;
     if (activeTab === "my") {
-      result = result.filter((skill) => 
-        installedSkillMap.has(skill.name) || 
-        skill.source === "local" || 
-        skill.is_builtin === true || 
-        skill.is_builtin_source === true
-      );
+      // `skills` (from skills.list → scan_skills) contains ONLY installed
+      // workspace skills, so the my-skills tab shows all of them. No source
+      // allowlist — a new marketplace or a manual import (no manifest) shows up
+      // purely because it lives in workspace/skills/.
     }
     const keyword = search.trim().toLowerCase();
     if (!keyword) return result;
@@ -755,24 +778,13 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
   }, [skills, search, activeTab, installedSkillMap]);
 
   const visibleSkills = useMemo(() => {
-    let filtered = [...filteredSkills];
-    if (activeTab === "my") {
-      filtered = filtered.filter((skill) => {
-        if (skill.is_builtin_source && !installedSkillMap.has(skill.name) && skill.source !== "local") {
-          return false;
-        }
-        return true;
-      });
-    }
-    return filtered.sort((a, b) => {
-      const aSkillNet = a.source === "skillnet" ? 1 : 0;
-      const bSkillNet = b.source === "skillnet" ? 1 : 0;
-      if (aSkillNet !== bSkillNet) {
-        return bSkillNet - aSkillNet;
-      }
-      return a.name.localeCompare(b.name);
-    });
-  }, [filteredSkills, activeTab, installedSkillMap]);
+    // No source-based hiding for the my-skills tab: every entry in `skills` is
+    // an installed workspace skill (scan_skills only returns those), so all of
+    // them are visible. The old `source !== "local"` guard was a fragile
+    // allowlist that dropped new-marketplace and manually-imported skills.
+    const filtered = [...filteredSkills];
+    return filtered.sort((a, b) => a.name.localeCompare(b.name));
+  }, [filteredSkills]);
 
   const builtinSkills = useMemo(() => {
     let filtered = skills.filter((skill) => skill.is_builtin === true);
@@ -1563,32 +1575,19 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
             </button>
             <button
               onClick={() => {
-                if (activeTab === "index") {
-                  void fetchRetrievalStatus();
-                  void fetchRetrievalTree();
-                } else if (activeTab === "graph") {
-                  const started = skillGraphPanelRef.current?.refresh() ?? false;
-                  if (started) {
-                    updateGraphReading(true);
-                  }
-                } else if (activeTab === "my" || (activeTab === "marketplace" && marketplaceSubTab === "builtin")) {
+                if (activeTab === "my" || (activeTab === "marketplace" && marketplaceSubTab === "builtin")) {
                   setSearch("");
                   fetchSkills(true);
                 } else {
                   setSearchTrigger((prev) => prev + 1);
                 }
               }}
-              className={`flex items-center gap-1.5 px-1 py-1.5 rounded-lg text-sm text-text-muted transition-colors ${
-                activeTab === "graph" && graphReading
-                  ? "cursor-not-allowed opacity-70"
-                  : "hover:text-text hover:bg-secondary/50"
-              }`}
-              disabled={activeTab === "graph" && graphReading}
+              className="flex items-center gap-1.5 px-1 py-1.5 rounded-lg text-sm text-text-muted transition-colors hover:text-text hover:bg-secondary/50"
             >
-              <svg className={`w-4 h-4 ${activeTab === "graph" && graphReading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
-              {activeTab === "graph" && graphReading ? "正在读取技能总谱" : t('common.refresh')}
+              {t('common.refresh')}
             </button>
             <button
               onClick={handleImportLocal}
@@ -1630,28 +1629,8 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
             >
               {t('skills.tabs.marketplace')}
             </button>
-            <button
-              onClick={() => setActiveTab("graph")}
-              className={`px-4 text-sm font-medium transition-colors ${
-                activeTab === "graph"
-                  ? "rounded-[8px] bg-secondary h-8 text-text"
-                  : "text-text-muted hover:text-text"
-              }`}
-            >
-              {t('skills.tabs.skillGraph')}
-            </button>
-            <button
-              onClick={() => setActiveTab("index")}
-              className={`px-4 text-sm font-medium transition-colors ${
-                activeTab === "index"
-                  ? "rounded-[8px] bg-secondary h-8 text-text"
-                  : "text-text-muted hover:text-text"
-              }`}
-            >
-              {t('skills.tabs.skillIndex')}
-            </button>
           </div>
-          {activeTab !== "index" && activeTab !== "graph" ? (
+          {activeTab === "my" || activeTab === "marketplace" ? (
             <div className="flex items-center gap-1 border border-border rounded-lg p-1">
               <button
                 onClick={() => setViewMode("list")}
@@ -1683,236 +1662,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
           ) : null}
         </div>
 
-        {activeTab === "index" ? (
-          <div className="mt-4 flex flex-col flex-1 min-h-0 gap-4 overflow-y-auto pr-2">
-            <div className="rounded-lg border border-border bg-panel p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-[220px]">
-                  <div className="text-sm font-medium text-text-strong">
-                    {t('skills.retrieval.title')}
-                  </div>
-                  <div className="text-xs text-text-muted mt-1">
-                    {retrievalStatusText}
-                    {retrievalStatus?.indexed_count != null
-                      ? ` · ${t('skills.retrieval.indexedCount', { count: retrievalStatus.indexed_count })}`
-                      : ""}
-                    {(retrievalStatus?.installed_count ?? retrievalStatus?.installed_enabled_count) != null
-                      ? ` · ${t('skills.retrieval.installedCount', {
-                          count: retrievalStatus?.installed_count ?? retrievalStatus?.installed_enabled_count,
-                        })}`
-                      : ""}
-                  </div>
-                  {retrievalLastBuildMessage ? (
-                    <div className="mt-1 text-xs text-amber-600">
-                      {retrievalLastBuildMessage}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => void handleBuildRetrievalIndex(false)}
-                    className="px-3 py-1.5 rounded-lg text-sm border border-border hover:bg-secondary transition-colors disabled:opacity-60"
-                    disabled={retrievalLoading === "build" || retrievalBuildRunning || retrievalStatus?.enabled === false}
-                  >
-                    {retrievalLoading === "build"
-                      ? t('skills.retrieval.building')
-                      : t('skills.retrieval.build')}
-                  </button>
-                  {retrievalStatus?.index_exists ? (
-                    <button
-                      onClick={() => void handleBuildRetrievalIndex(true)}
-                      className="px-3 py-1.5 rounded-lg text-sm border border-border hover:bg-secondary transition-colors disabled:opacity-60"
-                      disabled={retrievalLoading === "build" || retrievalBuildRunning || retrievalStatus?.enabled === false}
-                    >
-                      {retrievalLoading === "build"
-                        ? t('skills.retrieval.building')
-                        : t('skills.retrieval.fullRebuild')}
-                    </button>
-                  ) : null}
-                  {retrievalBuildRunning ? (
-                    <button
-                      onClick={handleCancelRetrievalBuild}
-                      className="px-3 py-1.5 rounded-lg text-sm border border-border hover:bg-secondary transition-colors disabled:opacity-60"
-                      disabled={retrievalLoading === "cancel"}
-                    >
-                      {retrievalLoading === "cancel"
-                        ? t('skills.retrieval.cancelling')
-                        : t('skills.retrieval.cancel')}
-                    </button>
-                  ) : null}
-                  <button
-                    onClick={() => {
-                      setRetrievalShowExistingIndexFailureNotice(true);
-                      void fetchRetrievalStatus();
-                      void fetchRetrievalTree();
-                    }}
-                    className="px-3 py-1.5 rounded-lg text-sm border border-border hover:bg-secondary transition-colors disabled:opacity-60"
-                    disabled={retrievalLoading === "tree" || retrievalLoading === "status"}
-                  >
-                    {retrievalLoading === "tree" || retrievalLoading === "status"
-                      ? t('common.refreshing')
-                      : t('common.refresh')}
-                  </button>
-                </div>
-              </div>
-              {retrievalHasBuildInfo ? (
-                <SkillIndexBuildProgressPanel
-                  status={retrievalStatus}
-                  progress={retrievalBuildProgress}
-                  logs={retrievalBuildLogs}
-                  t={t}
-                />
-              ) : null}
-            </div>
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(320px,1fr)_minmax(320px,0.9fr)]">
-              <div className="rounded-lg border border-border bg-panel p-4 min-h-[420px] flex flex-col">
-                <div className="mb-3 flex items-center justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-medium text-text-strong">
-                      {t('skills.retrieval.treeTitle')}
-                    </div>
-                    <div className="text-xs text-text-muted mt-1">
-                      {retrievalTreeNodes.length > 0
-                        ? t('skills.retrieval.treeCount', {
-                            branches: retrievalTreeCounts.branches,
-                            skills: retrievalTreeCounts.skills,
-                          })
-                        : retrievalLoading === "tree"
-                        ? t('common.loading')
-                        : t('skills.retrieval.noTree')}
-                    </div>
-                  </div>
-                </div>
-                <div className="flex-1 min-h-[320px] overflow-auto rounded-md border border-border bg-secondary/40 p-2">
-                  {retrievalTreeNodes.length > 0 ? (
-                    <SkillIndexTreeView
-                      roots={retrievalTreeRoots}
-                      selectedCid={selectedTreeNodeCid}
-                      onSelect={setSelectedTreeNodeCid}
-                      emptyText={t('skills.retrieval.noTree')}
-                      branchLabel={t('skills.retrieval.nodeTypes.branch')}
-                      skillLabel={t('skills.retrieval.nodeTypes.skill')}
-                      disabledSkillNames={disabledSkillNames}
-                      disabledSkillLabel={t('skills.retrieval.disabledSkill')}
-                    />
-                  ) : (
-                    <MarkdownRenderer
-                      content={
-                        retrievalTree
-                        || (retrievalLoading === "tree" ? t('common.loading') : t('skills.retrieval.noTree'))
-                      }
-                      className="chat-markdown text-xs text-text-muted"
-                    />
-                  )}
-                </div>
-              </div>
-              <div className="rounded-lg border border-border bg-panel p-4 min-h-[420px] flex flex-col">
-                <div className="text-sm font-medium text-text-strong mb-3">
-                  {t('skills.retrieval.nodeDetails')}
-                </div>
-                {selectedTreeNode ? (
-                  <div className="flex-1 min-h-0 overflow-auto">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-base font-semibold text-text-strong break-words">
-                          {getSkillIndexNodeLabel(selectedTreeNode)}
-                        </div>
-                        <div className="mt-1 text-xs text-text-muted break-all">
-                          {selectedTreeNode.cid}
-                        </div>
-                      </div>
-                      <span
-                        className={`shrink-0 rounded border px-2 py-1 text-xs ${
-                          selectedTreeNode.type === "leaf"
-                            ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-600"
-                            : "border-sky-500/25 bg-sky-500/10 text-sky-600"
-                        }`}
-                      >
-                        {selectedTreeNode.type === "leaf"
-                          ? t('skills.retrieval.nodeTypes.skill')
-                          : t('skills.retrieval.nodeTypes.branch')}
-                      </span>
-                    </div>
-
-                    <dl className="mt-4 space-y-3 text-sm">
-                      <div>
-                        <dt className="text-xs text-text-muted">{t('skills.retrieval.nodeDescription')}</dt>
-                        <dd className="mt-1 whitespace-pre-wrap text-text">
-                          {selectedTreeNode.description || t('skills.noDescription')}
-                        </dd>
-                      </div>
-                      {selectedTreeNode.select_when ? (
-                        <div>
-                          <dt className="text-xs text-text-muted">{t('skills.retrieval.nodeSelectWhen')}</dt>
-                          <dd className="mt-1 whitespace-pre-wrap text-text">{selectedTreeNode.select_when}</dd>
-                        </div>
-                      ) : null}
-                      {selectedTreeNode.dont_select_when ? (
-                        <div>
-                          <dt className="text-xs text-text-muted">{t('skills.retrieval.nodeDontSelectWhen')}</dt>
-                          <dd className="mt-1 whitespace-pre-wrap text-text">{selectedTreeNode.dont_select_when}</dd>
-                        </div>
-                      ) : null}
-                      {selectedTreeNode.source_description ? (
-                        <div>
-                          <dt className="text-xs text-text-muted">{t('skills.retrieval.nodeSourceDescription')}</dt>
-                          <dd className="mt-1 whitespace-pre-wrap text-text">{selectedTreeNode.source_description}</dd>
-                        </div>
-                      ) : null}
-                      {selectedTreeNode.worker_id ? (
-                        <div>
-                          <dt className="text-xs text-text-muted">{t('skills.retrieval.nodeWorkerId')}</dt>
-                          <dd className="mt-1 break-all font-mono text-xs text-text">{selectedTreeNode.worker_id}</dd>
-                        </div>
-                      ) : null}
-                      {selectedTreeNode.category ? (
-                        <div>
-                          <dt className="text-xs text-text-muted">{t('skills.retrieval.nodeCategory')}</dt>
-                          <dd className="mt-1 whitespace-pre-wrap text-text">{selectedTreeNode.category}</dd>
-                        </div>
-                      ) : null}
-                      {selectedTreeNode.keywords?.length ? (
-                        <div>
-                          <dt className="text-xs text-text-muted">{t('skills.retrieval.nodeKeywords')}</dt>
-                          <dd className="mt-2 flex flex-wrap gap-1.5">
-                            {selectedTreeNode.keywords.slice(0, 24).map((keyword) => (
-                              <span key={keyword} className="rounded border border-border bg-secondary px-2 py-0.5 text-xs text-text-muted">
-                                {keyword}
-                              </span>
-                            ))}
-                          </dd>
-                        </div>
-                      ) : null}
-                      {selectedTreeNode.examples?.length ? (
-                        <div>
-                          <dt className="text-xs text-text-muted">{t('skills.retrieval.nodeExamples')}</dt>
-                          <dd className="mt-1 space-y-1">
-                            {selectedTreeNode.examples.slice(0, 5).map((example) => (
-                              <div key={example} className="whitespace-pre-wrap rounded border border-border bg-secondary px-2 py-1 text-xs text-text">
-                                {example}
-                              </div>
-                            ))}
-                          </dd>
-                        </div>
-                      ) : null}
-                    </dl>
-                  </div>
-                ) : (
-                  <div className="flex-1 min-h-[220px] rounded-md border border-dashed border-border bg-secondary/30 p-4 text-sm text-text-muted">
-                    {t('skills.retrieval.selectNodeHint')}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-          ) : null}
-
-        {activeTab === "graph" ? (
-          <div className="mt-4 flex-1 min-h-0">
-            <SkillGraphPanel ref={skillGraphPanelRef} onReadingChange={updateGraphReading} />
-          </div>
-        ) : null}
-
         {activeTab === "marketplace" ? (
           <>
             <div className="mt-4 flex items-center justify-between gap-4">
@@ -1931,20 +1680,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                 >
                   {t('skills.marketplaceTabs.builtin')}
                 </button>
-              <button
-                onClick={() => {
-                  setMarketplaceSubTab("swarmskills");
-                  setDebouncedSearch(search);
-                  setSearchTrigger((prev) => prev + 1);
-                }}
-                className={`px-4 text-sm font-medium transition-colors ${
-                  marketplaceSubTab === "swarmskills"
-                    ? "rounded-[8px] bg-secondary h-8 text-text"
-                    : "text-text-muted hover:text-text"
-                }`}
-              >
-                {t('skills.swarmskills.title')}
-              </button>
               <button
                 onClick={() => {
                   setMarketplaceSubTab("online");
@@ -1968,10 +1703,10 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                   placeholder={
                     marketplaceSubTab === "builtin"
                       ? t("skills.searchPlaceholder")
-                      : marketplaceSubTab === "swarmskills"
-                      ? t("skills.swarmskills.searchPlaceholder")
                       : onlineSource === "skillnet"
                       ? t("skills.skillNet.searchPlaceholder")
+                      : onlineSource === "skillhub"
+                      ? t("skills.skillhub.searchPlaceholder")
                       : t("skills.clawhub.searchPlaceholder")
                   }
                   className="w-full px-3 py-1.5 rounded-lg text-sm bg-secondary border border-border text-text placeholder:text-text-muted"
@@ -2058,7 +1793,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                               </div>
                               <div className="flex flex-wrap gap-1.5 mt-2 flex-shrink-0 text-xs text-text-muted">
                                 <span className="px-2 py-0.5 rounded-full bg-secondary border border-border truncate">
-                                  {t('skills.sourceLabel')}: {getSourceLabel(skill.source, t, skill.is_builtin_source)}
+                                  {t('skills.sourceLabel')}: {getSourceLabel(skill.source, t, skill.is_builtin_source, skill.marketplace_source)}
                                 </span>
                               </div>
                               <div className="flex items-center mt-auto pt-2 gap-2 flex-shrink-0" style={{ width: "100%" }}>
@@ -2076,23 +1811,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                     })
                   )}
                 </>
-              )}
-
-              {marketplaceSubTab === "swarmskills" && (
-                <div className="h-full" key={`swarmskills-${searchTrigger}`}>
-                  <TeamSkillsHubModal
-                    open={true}
-                    embedded={true}
-                    sessionId={sessionId}
-                    externalSearchQuery={debouncedSearch}
-                    installedSkillNames={installedSkillNames}
-                    viewMode={viewMode}
-                    onClose={() => {}}
-                    onInstalled={(_skillName: string) => {
-                      void fetchSkills();
-                    }}
-                  />
-                </div>
               )}
 
               {marketplaceSubTab === "online" && onlineSource === "skillnet" && (
@@ -2122,6 +1840,23 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                     externalSearchQuery={debouncedSearch}
                     installedSkillNames={installedSkillNames}
                     installedSkillOrigins={installedSkillOrigins}
+                    viewMode={viewMode}
+                    onClose={() => {}}
+                    onInstalled={(_skillName: string) => {
+                      void fetchSkills();
+                    }}
+                  />
+                </div>
+              )}
+
+              {marketplaceSubTab === "online" && onlineSource === "skillhub" && (
+                <div className="h-full" key={`skillhub-${searchTrigger}`}>
+                  <SkillHubSearchModal
+                    open={true}
+                    embedded={true}
+                    sessionId={sessionId}
+                    externalSearchQuery={debouncedSearch}
+                    installedSkillNames={installedSkillNames}
                     viewMode={viewMode}
                     onClose={() => {}}
                     onInstalled={(_skillName: string) => {
@@ -2171,7 +1906,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                         </div>
                         <div className="flex flex-wrap gap-2 mt-3 text-xs text-text-muted">
                           <span className="px-2 py-1 rounded-full bg-secondary border border-border">
-                            {t('skills.sourceLabel')}: {getSourceLabel(selectedSkill.source, t, selectedSkill.is_builtin_source)}
+                            {t('skills.sourceLabel')}: {getSourceLabel(selectedSkill.source, t, selectedSkill.is_builtin_source, selectedSkill.marketplace_source)}
                           </span>
                           <span className="px-2 py-1 rounded-full bg-secondary border border-border">
                             {t('skills.versionLabel')}: {selectedSkill.version || 'unknown'}
@@ -2320,7 +2055,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                                   </div>
                                   <div className="flex flex-wrap gap-2 mt-3 text-xs text-text-muted">
                                     <span className="px-2 py-1 rounded-full bg-secondary border border-border">
-                                      {t('skills.sourceLabel')}: {getSourceLabel(skill.source, t, skill.is_builtin_source)}
+                                      {t('skills.sourceLabel')}: {getSourceLabel(skill.source, t, skill.is_builtin_source, skill.marketplace_source)}
                                     </span>
                                     <span className="px-2 py-1 rounded-full bg-secondary border border-border">
                                       {t('skills.statusLabel')}: {renderStatus(skill)}
@@ -2356,7 +2091,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                               </div>
                               <div className="flex flex-wrap gap-1.5 mt-2 flex-shrink-0 text-xs text-text-muted">
                                 <span className="px-2 py-0.5 rounded-full bg-secondary border border-border truncate">
-                                  {t('skills.sourceLabel')}: {getSourceLabel(skill.source, t, skill.is_builtin_source)}
+                                  {t('skills.sourceLabel')}: {getSourceLabel(skill.source, t, skill.is_builtin_source, skill.marketplace_source)}
                                 </span>
                                 <span className="px-2 py-0.5 rounded-full bg-secondary border border-border truncate">
                                   {t('skills.statusLabel')}: {renderStatus(skill)}
@@ -2423,15 +2158,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
         installedSkillNames={installedSkillNames}
         installedSkillOrigins={installedSkillOrigins}
         onClose={() => setClawHubModalOpen(false)}
-        onInstalled={async () => {
-          await fetchSkills();
-        }}
-      />
-      <TeamSkillsHubModal
-        open={teamSkillsHubModalOpen}
-        sessionId={sessionId}
-        installedSkillNames={installedSkillNames}
-        onClose={() => setTeamSkillsHubModalOpen(false)}
         onInstalled={async () => {
           await fetchSkills();
         }}

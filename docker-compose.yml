@@ -62,6 +62,10 @@ services:
       - ./agent_gateway:/app/agent_gateway:ro
       - ./agent_core:/app/agent_core:ro
       - ./code.py:/app/code.py:ro
+      # Preset skills source for the startup seed (rebuild-agent-data copies
+      # these into /app/workspace/skills on gateway start). :ro so the host
+      # skills/ dir is the source of truth; edits apply on restart.
+      - ./skills:/app/skills:ro
     # bubblewrap sandbox (agent_core/sandbox.py) needs to create mount+user
     # namespaces inside the container, which docker's default seccomp/cap set
     # blocks. Relax just enough for bwrap; the gateway still binds 127.0.0.1

@@ -45,6 +45,26 @@ class ReqMethod(str, Enum):
     SKILLS_LIST = "skills.list"
     SKILLS_INSTALLED = "skills.installed"
     SKILLS_GET = "skills.get"
+    SKILLS_TOGGLE = "skills.toggle"
+    SKILLS_UNINSTALL = "skills.uninstall"
+    SKILLS_INSTALL = "skills.install"
+    SKILLS_IMPORT_LOCAL = "skills.import_local"
+    SKILLS_MARKETPLACE_LIST = "skills.marketplace.list"
+    # Online marketplaces (backed by agent_gateway/skill_marketplaces.py).
+    SKILLS_SKILLNET_SEARCH = "skills.skillnet.search"
+    SKILLS_SKILLNET_INSTALL = "skills.skillnet.install"
+    SKILLS_SKILLNET_INSTALL_STATUS = "skills.skillnet.install_status"
+    SKILLS_SKILLNET_EVALUATE = "skills.skillnet.evaluate"
+    SKILLS_CLAWHUB_SEARCH = "skills.clawhub.search"
+    SKILLS_CLAWHUB_GET_TOKEN = "skills.clawhub.get_token"
+    SKILLS_CLAWHUB_SET_TOKEN = "skills.clawhub.set_token"
+    SKILLS_CLAWHUB_DOWNLOAD = "skills.clawhub.download"
+    SKILLS_TEAMSKILLS_SEARCH = "skills.teamskillshub.search"
+    SKILLS_TEAMSKILLS_INSTALL = "skills.teamskillshub.install"
+    SKILLS_TEAMSKILLS_INFO = "skills.teamskillshub.info"
+    SKILLS_SKILLHUB_SEARCH = "skills.skillhub.search"
+    SKILLS_SKILLHUB_INSTALL = "skills.skillhub.install"
+    SKILLS_SKILLHUB_INFO = "skills.skillhub.info"
 
     # ── agents ──
     AGENTS_LIST = "agents.list"
@@ -64,6 +84,9 @@ class ReqMethod(str, Enum):
     COMMAND_COMPACT = "command.compact"
     COMMAND_CONTEXT = "command.context"
     COMMAND_MODEL = "command.model"
+
+    # ── runtime status ──
+    MEMORY_COMPUTE = "memory.compute"  # process RSS + used % for the ToolPanel status card
 
     # ── channel / heartbeat ──
     CHANNEL_GET = "channel.get"

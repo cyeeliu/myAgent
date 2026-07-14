@@ -253,8 +253,12 @@ export function SkillNetSearchModal({
     }
   }, [externalSearchQuery, embedded]);
 
+  // 300ms 防抖 + 竞态保护：按键期间合并请求，丢弃过期响应。
+  const searchReqIdRef = useRef(0);
   useEffect(() => {
-    if (embedded && query.trim()) {
+    if (!embedded) return;
+    const timer = window.setTimeout(() => {
+      const reqId = ++searchReqIdRef.current;
       const q = query.trim();
       setLoadState("loading");
       setBannerError(null);
@@ -267,6 +271,7 @@ export function SkillNetSearchModal({
             detail_params?: Record<string, unknown>;
             skills?: SkillNetItem[];
           }>("skills.skillnet.search", withSession({ q, limit: 20 }));
+          if (reqId !== searchReqIdRef.current) return;
           if (!data.success) {
             throw new LocalizedError(
               toLocErr(
@@ -282,6 +287,7 @@ export function SkillNetSearchModal({
           setExpandedUrl(null);
           dismissEvaluateOverlay();
         } catch (err) {
+          if (reqId !== searchReqIdRef.current) return;
           console.error(err);
           setResults([]);
           setLoadState("error");
@@ -295,7 +301,8 @@ export function SkillNetSearchModal({
           });
         }
       })();
-    }
+    }, 300);
+    return () => window.clearTimeout(timer);
   }, [query, embedded, t, withSession, dismissEvaluateOverlay]);
 
   useEffect(() => {
@@ -485,7 +492,17 @@ export function SkillNetSearchModal({
           skill?: { name?: string };
         }>(
           "skills.skillnet.install",
-          withSession({ url: item.skill_url, force: forceOverwrite })
+          withSession({
+            url: item.skill_url,
+            force: forceOverwrite,
+            meta: {
+              source: "skillnet",
+              version: "",
+              author: item.author || "",
+              summary: item.skill_description || "",
+              url: item.skill_url,
+            },
+          })
         );
         if (!data.success) {
           // 如果是"已安装"错误且尚未强制覆盖，则弹窗确认

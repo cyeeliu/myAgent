@@ -223,7 +223,14 @@ export function ChatPanel({
   const suppressNextScrollToEndRef = useRef(false);
   const [isSending, setIsSending] = React.useState(false);
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
-  const hasConversation = Boolean(historyPager || hasTimelineContent);
+  // hasConversation follows hasTimelineContent only. Previously historyPager alone
+  // (set on empty history or during the load window) made this true while
+  // messages was still empty, rendering the "加载配置中" branch — which stayed
+  // forever if restore finalized empty or lost the done frame, leaving the user
+  // stuck on first entry of an existing session. Both branches below render an
+  // InputArea, so an empty/loading history now shows the welcome screen (still
+  // typeable) instead of a stuck "loading config" state.
+  const hasConversation = hasTimelineContent;
   const chatContentClassName = hasConversation
     ? `chat-content${mode === 'team' ? ' chat-content--team' : ''}`
     : 'chat-content chat-content--welcome';

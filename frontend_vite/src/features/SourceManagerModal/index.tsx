@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { webRequest } from "../../services/webClient";
 
-type SourceType = "skillnet" | "clawhub";
+type SourceType = "skillnet" | "clawhub" | "skillhub";
 
 interface SourceManagerModalProps {
   open: boolean;
@@ -162,6 +162,20 @@ export function SourceManagerModal({
                   <div className="text-xs opacity-70">{t("sourceManager.clawhubDesc")}</div>
                 </div>
               </button>
+              <button
+                type="button"
+                onClick={() => handleSourceSelect("skillhub")}
+                className={`flex-1 py-3 px-4 rounded-lg border transition-all ${
+                  selectedSource === "skillhub"
+                    ? "border-[#191919] bg-[#EAEAEB] text-[#191919]"
+                    : "border-border bg-card text-text-muted hover:border-gray-400"
+                }`}
+              >
+                <div className="text-left">
+                  <div className="font-medium">SkillHub</div>
+                  <div className="text-xs opacity-70">{t("sourceManager.skillhubDesc")}</div>
+                </div>
+              </button>
             </div>
           </div>
 
@@ -251,6 +265,17 @@ export function SourceManagerModal({
                   />
                 </li>
               </ul>
+            </div>
+          )}
+
+          {selectedSource === "skillhub" && (
+            <div className="rounded-lg border border-border bg-panel p-4">
+              <div className="font-medium text-text mb-2">
+                {t("sourceManager.skillnet.usageNoticeTitle")}
+              </div>
+              <p className="text-xs text-text-muted">
+                {t("sourceManager.skillhubDesc")}
+              </p>
             </div>
           )}
         </div>

@@ -2,7 +2,7 @@
  * ClawHub 在线搜索弹窗
  * �?ClawHub 检索并安装技�?
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { webRequest } from "../../services/webClient";
 
@@ -124,13 +124,20 @@ export function ClawHubSearchModal({
     }
   }, [withSession, embedded]);
 
+  // Debounced search + race guard. The modal used to fire a WS search on every
+  // keystroke; each call waited on a 2-3s upstream, and a slow older response
+  // could clobber the newest. Now we coalesce keystrokes with a 300ms timer and
+  // drop any response that isn't from the latest in-flight request.
+  const searchReqIdRef = useRef(0);
+
   useEffect(() => {
-    if (open) {
+    if (open && !embedded) {
       fetchToken();
-      // 重置本地已安装状态（从父组件传入的数据重新开始）
+    }
+    if (open) {
       setInstalledSlugs(new Set());
     }
-  }, [open, fetchToken]);
+  }, [open, embedded, fetchToken]);
 
   useEffect(() => {
     if (embedded && externalSearchQuery !== undefined) {
@@ -139,7 +146,9 @@ export function ClawHubSearchModal({
   }, [externalSearchQuery, embedded]);
 
   useEffect(() => {
-    if (embedded && query.trim()) {
+    if (!embedded) return;
+    const timer = window.setTimeout(() => {
+      const reqId = ++searchReqIdRef.current;
       const q = query.trim();
       setLoadState("loading");
       setMessage(null);
@@ -151,6 +160,7 @@ export function ClawHubSearchModal({
             detail_key?: string;
             skills?: ClawHubSkillItem[];
           }>("skills.clawhub.search", withSession({ q, limit: 50 }));
+          if (reqId !== searchReqIdRef.current) return;
           if (!data.success) {
             const message = data.detail_key
               ? t(data.detail_key)
@@ -160,6 +170,7 @@ export function ClawHubSearchModal({
           setResults(data.skills || []);
           setLoadState("success");
         } catch (err) {
+          if (reqId !== searchReqIdRef.current) return;
           console.error(err);
           setResults([]);
           setLoadState("error");
@@ -169,7 +180,8 @@ export function ClawHubSearchModal({
           );
         }
       })();
-    }
+    }, 300);
+    return () => window.clearTimeout(timer);
   }, [query, embedded, t, withSession, showMessage]);
 
   useEffect(() => {
@@ -256,7 +268,17 @@ export function ClawHubSearchModal({
         skill?: { name: string };
       }>(
         "skills.clawhub.download",
-        withSession({ slug, force: forceOverwrite })
+        withSession({
+          slug,
+          force: forceOverwrite,
+          meta: {
+            source: "clawhub",
+            version: item.version || "",
+            author: (item as ClawHubSkillItem & { owner?: string }).owner || "",
+            summary: item.summary || "",
+            url: `https://clawhub.ai/skills/${slug}`,
+          },
+        })
       );
       if (!data.success) {
         const message = data.detail_key
@@ -299,10 +321,6 @@ export function ClawHubSearchModal({
   if (!open) return null;
 
   if (embedded) {
-    if (tokenLoading) {
-      return null;
-    }
-
     return (
       <div className="flex flex-col h-full">
         <div className="overflow-auto flex-1 min-h-0">

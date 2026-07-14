@@ -492,6 +492,7 @@
     "selectSource": "选择在线搜索源",
     "skillnetDesc": "开源技能库",
     "clawhubDesc": "企业技能库",
+    "skillhubDesc": "中国 Skills 社区（skillhub.cn）",
     "skillnetInfo": "SkillNet 在线搜索",
     "skillnetInfoDesc": "SkillNet 是一个开源的技能库，无需额外配置即可使用。",
     "updatedAt": "更新于 {{time}}",
@@ -804,26 +805,86 @@
       "referencedByTeams": "被 {{count}} 个 Team 引用"
     },
     "groups": {
-      "modelDefault": { "label": "默认模型（主对话）", "hint": "主对话模型服务与鉴权参数" },
-      "modelVideo": { "label": "视频模型", "hint": "视频理解（可选）" },
-      "modelAudio": { "label": "音频模型", "hint": "语音识别（可选）" },
-      "modelVision": { "label": "视觉模型", "hint": "图像理解（可选）" },
-      "model": { "label": "模型配置", "hint": "模型服务与鉴权参数" },
-      "embed": { "label": "Embed配置", "hint": "Embed 服务与鉴权参数" },
-      "thirdParty": { "label": "第三方服务配置", "hint": "API Key 配置" },
-      "freeSearch": { "label": "免费搜索引擎配置", "hint": "控制免费搜索引擎启用" },
-      "evolution": { "label": "自演进配置", "hint": "Skills 在线自演进参数" },
-      "agents": { "label": "多Agent配置", "hint": "仅供集群模式使用，且必须添加Team" },
-      "team": { "label": "Team配置", "hint": "多智能体团队配置" },
-      "contextEngine": { "label": "上下文压缩", "hint": "控制对话上下文是否启用压缩" },
-      "permissions": { "label": "工具安全护栏", "hint": "控制工具调用时的权限检查" },
-      "a2ui": { "label": "A2UI", "hint": "开启或关闭生成式界面渲染与 A2UI 运行时提示词" },
-      "symphony": { "label": "技能交响乐", "hint": "控制技能交响乐" },
-      "skillRetrieval": { "label": "技能交响乐", "hint": "控制技能交响乐" },
-      "memory": { "label": "记忆系统敏感信息过滤", "hint": "配置禁止写入记忆的敏感信息类型" },
-      "email": { "label": "邮箱配置", "hint": "邮件账号与令牌参数" },
-      "other": { "label": "其他配置", "hint": "未归类的扩展参数" },
-      "proactive": { "label": "主动推荐", "hint": "自动分析用户需求，主动提供建议；调度频率请在定时任务面板调整" }
+      "modelDefault": {
+        "label": "默认模型（主对话）",
+        "hint": "主对话模型服务与鉴权参数"
+      },
+      "modelVideo": {
+        "label": "视频模型",
+        "hint": "视频理解（可选）"
+      },
+      "modelAudio": {
+        "label": "音频模型",
+        "hint": "语音识别（可选）"
+      },
+      "modelVision": {
+        "label": "视觉模型",
+        "hint": "图像理解（可选）"
+      },
+      "model": {
+        "label": "模型配置",
+        "hint": "模型服务与鉴权参数"
+      },
+      "embed": {
+        "label": "Embed配置",
+        "hint": "Embed 服务与鉴权参数"
+      },
+      "thirdParty": {
+        "label": "第三方服务配置",
+        "hint": "API Key 配置"
+      },
+      "freeSearch": {
+        "label": "免费搜索引擎配置",
+        "hint": "控制免费搜索引擎启用"
+      },
+      "evolution": {
+        "label": "自演进配置",
+        "hint": "Skills 在线自演进参数"
+      },
+      "agents": {
+        "label": "多Agent配置",
+        "hint": "仅供集群模式使用，且必须添加Team"
+      },
+      "team": {
+        "label": "Team配置",
+        "hint": "多智能体团队配置"
+      },
+      "contextEngine": {
+        "label": "上下文压缩",
+        "hint": "控制对话上下文是否启用压缩"
+      },
+      "permissions": {
+        "label": "工具安全护栏",
+        "hint": "控制工具调用时的权限检查"
+      },
+      "a2ui": {
+        "label": "A2UI",
+        "hint": "开启或关闭生成式界面渲染与 A2UI 运行时提示词"
+      },
+      "symphony": {
+        "label": "技能交响乐",
+        "hint": "控制技能交响乐"
+      },
+      "skillRetrieval": {
+        "label": "技能交响乐",
+        "hint": "控制技能交响乐"
+      },
+      "memory": {
+        "label": "记忆系统敏感信息过滤",
+        "hint": "配置禁止写入记忆的敏感信息类型"
+      },
+      "email": {
+        "label": "邮箱配置",
+        "hint": "邮件账号与令牌参数"
+      },
+      "other": {
+        "label": "其他配置",
+        "hint": "未归类的扩展参数"
+      },
+      "proactive": {
+        "label": "主动推荐",
+        "hint": "自动分析用户需求，主动提供建议；调度频率请在定时任务面板调整"
+      }
     },
     "booleanLabels": {
       "evolutionAutoScan": "自动检测可演进信号",
@@ -1067,7 +1128,10 @@
       "local": "本地",
       "project": "项目",
       "builtin": "内置",
-      "unknown": "未知"
+      "unknown": "未知",
+      "clawhub": "ClawHub",
+      "skillhub": "SkillHub",
+      "skillnet": "SkillNet"
     },
     "sourceLabel": "来源",
     "statusLabel": "状态",
@@ -1399,6 +1463,22 @@
       "titleHubAria": "TeamSkillsHub 在线市场",
       "search": "搜索",
       "searchPlaceholder": "输入关键词搜索 TeamSkills",
+      "noResults": "未找到相关技能，可换个关键词再试。",
+      "installing": "安装中…",
+      "messages": {
+        "installed": "已安装：{{name}}"
+      },
+      "errors": {
+        "searchFailed": "搜索失败",
+        "installFailed": "安装失败"
+      }
+    },
+    "skillhub": {
+      "title": "SkillHub",
+      "titleHubLinkText": "skillhub.cn",
+      "titleHubAria": "SkillHub 在线市场",
+      "search": "搜索",
+      "searchPlaceholder": "输入关键词搜索 SkillHub",
       "noResults": "未找到相关技能，可换个关键词再试。",
       "installing": "安装中…",
       "messages": {

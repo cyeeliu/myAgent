@@ -492,6 +492,7 @@
     "selectSource": "Select Online Search Source",
     "skillnetDesc": "Open source skill library",
     "clawhubDesc": "Enterprise skill library",
+    "skillhubDesc": "China Skills community (skillhub.cn)",
     "skillnetInfo": "SkillNet Online Search",
     "skillnetInfoDesc": "SkillNet is an open source skill library that can be used without additional configuration.",
     "updatedAt": "Updated at {{time}}",
@@ -805,26 +806,86 @@
       "referencedByTeams": "Referenced by {{count}} Team(s)"
     },
     "groups": {
-      "modelDefault": { "label": "Default Model (Main Chat)", "hint": "Primary chat model service and auth" },
-      "modelVideo": { "label": "Video Model", "hint": "Video understanding/generation model (optional)" },
-      "modelAudio": { "label": "Audio Model", "hint": "Speech recognition/synthesis model (optional)" },
-      "modelVision": { "label": "Vision Model", "hint": "Image understanding model (optional)" },
-      "model": { "label": "Model Configuration", "hint": "Model service and authentication settings" },
-      "embed": { "label": "Embed Configuration", "hint": "Embed service and authentication settings" },
-      "thirdParty": { "label": "Third-Party Services", "hint": "API key settings" },
-      "freeSearch": { "label": "Free Search Engines", "hint": "Enable free search engines" },
-      "evolution": { "label": "Evolution Settings", "hint": "Online skill evolution settings" },
-      "agents": { "label": "Multi-Agent Configuration", "hint": "For cluster mode only, Team required" },
-      "team": { "label": "Team Configuration", "hint": "Multi-agent team settings" },
-      "contextEngine": { "label": "Context Compression", "hint": "Enable or disable dialogue context compression" },
-      "permissions": { "label": "Tool Safety Guardrail", "hint": "Enable or disable permission checks for tool calls" },
-      "a2ui": { "label": "A2UI", "hint": "Enable or disable generated UI rendering and A2UI runtime prompts." },
-      "symphony": { "label": "Skill Symphony", "hint": "Control Skill Symphony" },
-      "skillRetrieval": { "label": "Skill Symphony", "hint": "Control Skill Symphony" },
-      "memory": { "label": "Memory Sensitive Info Filter", "hint": "Configure sensitive content types forbidden from memory" },
-      "email": { "label": "Email Settings", "hint": "Email account and token settings" },
-      "other": { "label": "Other Settings", "hint": "Unclassified extended parameters" },
-      "proactive": { "label": "Proactive Recommendation", "hint": "Automatically analyze user needs and proactively offer suggestions; adjust the schedule in the Cron panel" }
+      "modelDefault": {
+        "label": "Default Model (Main Chat)",
+        "hint": "Primary chat model service and auth"
+      },
+      "modelVideo": {
+        "label": "Video Model",
+        "hint": "Video understanding/generation model (optional)"
+      },
+      "modelAudio": {
+        "label": "Audio Model",
+        "hint": "Speech recognition/synthesis model (optional)"
+      },
+      "modelVision": {
+        "label": "Vision Model",
+        "hint": "Image understanding model (optional)"
+      },
+      "model": {
+        "label": "Model Configuration",
+        "hint": "Model service and authentication settings"
+      },
+      "embed": {
+        "label": "Embed Configuration",
+        "hint": "Embed service and authentication settings"
+      },
+      "thirdParty": {
+        "label": "Third-Party Services",
+        "hint": "API key settings"
+      },
+      "freeSearch": {
+        "label": "Free Search Engines",
+        "hint": "Enable free search engines"
+      },
+      "evolution": {
+        "label": "Evolution Settings",
+        "hint": "Online skill evolution settings"
+      },
+      "agents": {
+        "label": "Multi-Agent Configuration",
+        "hint": "For cluster mode only, Team required"
+      },
+      "team": {
+        "label": "Team Configuration",
+        "hint": "Multi-agent team settings"
+      },
+      "contextEngine": {
+        "label": "Context Compression",
+        "hint": "Enable or disable dialogue context compression"
+      },
+      "permissions": {
+        "label": "Tool Safety Guardrail",
+        "hint": "Enable or disable permission checks for tool calls"
+      },
+      "a2ui": {
+        "label": "A2UI",
+        "hint": "Enable or disable generated UI rendering and A2UI runtime prompts."
+      },
+      "symphony": {
+        "label": "Skill Symphony",
+        "hint": "Control Skill Symphony"
+      },
+      "skillRetrieval": {
+        "label": "Skill Symphony",
+        "hint": "Control Skill Symphony"
+      },
+      "memory": {
+        "label": "Memory Sensitive Info Filter",
+        "hint": "Configure sensitive content types forbidden from memory"
+      },
+      "email": {
+        "label": "Email Settings",
+        "hint": "Email account and token settings"
+      },
+      "other": {
+        "label": "Other Settings",
+        "hint": "Unclassified extended parameters"
+      },
+      "proactive": {
+        "label": "Proactive Recommendation",
+        "hint": "Automatically analyze user needs and proactively offer suggestions; adjust the schedule in the Cron panel"
+      }
     },
     "booleanLabels": {
       "evolutionAutoScan": "Auto-detect evolution signals",
@@ -1068,7 +1129,10 @@
       "local": "Local",
       "project": "Project",
       "builtin": "Built-in",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "clawhub": "ClawHub",
+      "skillhub": "SkillHub",
+      "skillnet": "SkillNet"
     },
     "sourceLabel": "Source",
     "statusLabel": "Status",
@@ -1400,6 +1464,22 @@
       "titleHubAria": "TeamSkillsHub marketplace",
       "search": "Search",
       "searchPlaceholder": "Search TeamSkills by keyword",
+      "noResults": "No matching skills. Try different keywords.",
+      "installing": "Installing…",
+      "messages": {
+        "installed": "Installed: {{name}}"
+      },
+      "errors": {
+        "searchFailed": "Search failed",
+        "installFailed": "Install failed"
+      }
+    },
+    "skillhub": {
+      "title": "SkillHub",
+      "titleHubLinkText": "skillhub.cn",
+      "titleHubAria": "SkillHub marketplace",
+      "search": "Search",
+      "searchPlaceholder": "Search SkillHub by keyword",
       "noResults": "No matching skills. Try different keywords.",
       "installing": "Installing…",
       "messages": {

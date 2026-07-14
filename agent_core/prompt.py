@@ -27,7 +27,7 @@ def assemble_system_prompt(context: dict) -> str:
                 PROMPT_SECTIONS["tools"],
                 PROMPT_SECTIONS["workspace"]]
     sections.append(f"Current time: {datetime.now().isoformat(timespec='seconds')}")
-    sections.append("Skills catalog:\n" + list_skills() +
+    sections.append("Skills catalog:\n" + list_skills(enabled_only=True) +
                     "\nUse load_skill(name) when a skill is relevant.")
     sections.append("Agents catalog:\n" + scan_agents() +
                     "\nUse task(description=..., agent=<name>) to dispatch a defined agent.")

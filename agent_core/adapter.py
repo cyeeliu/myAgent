@@ -128,7 +128,7 @@ def _to_openai_tools(tools) -> list[dict] | None:
     }} for t in tools]
 
 def chat_create(model, system=None, messages=None, tools=None,
-                max_tokens=8000, stream=False, events=None):
+                max_tokens=8000, stream=False, events=None, timeout=None):
     """Call the OpenAI-compatible chat endpoint and return an Anthropic-shaped
     response ({content: [blocks], stop_reason}) so the rest of the agent stays
     provider-agnostic.
@@ -136,7 +136,9 @@ def chat_create(model, system=None, messages=None, tools=None,
     When stream=True (API path), token deltas are emitted as `token` events and
     tool_call fragments are reassembled; the returned shape is identical. When
     stream=False (CLI path), a single non-streaming call is made — preserving
-    the original CLI behavior."""
+    the original CLI behavior. `timeout` (seconds) is forwarded to the
+    non-streaming call only — used by memory's one-shot selection/extraction
+    calls so a slow reasoning model can't stall the turn for 20s."""
     oai_msgs = _to_openai_messages(system, messages or [])
     kwargs = {"model": model,
               "messages": oai_msgs,
@@ -146,6 +148,8 @@ def chat_create(model, system=None, messages=None, tools=None,
         kwargs["tools"] = oai_tools
 
     if not stream:
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         resp = model_config.client().chat.completions.create(**kwargs)
         choice = resp.choices[0]
         msg = choice.message
