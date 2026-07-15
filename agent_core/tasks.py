@@ -10,7 +10,75 @@ from agent_core.env import session_dir
 def _tasks_dir():
     return session_dir() / ".tasks"
 
-CURRENT_TODOS: list[dict] = []
+
+def _current_todos() -> list:
+    """The current session's todo list. Todos are per-session (Session.todos),
+    routed through mcp.get_current_session() — a threading.local set by
+    agent_loop — so concurrent gateway sessions no longer share one list."""
+    try:
+        from agent_core.mcp import get_current_session
+        s = get_current_session()
+        if s is not None:
+            return s.todos
+    except Exception:
+        pass
+    return []
+
+
+def set_todos(todos: list) -> None:
+    """Replace the current session's todo list (called by run_todo_write)."""
+    try:
+        from agent_core.mcp import get_current_session
+        s = get_current_session()
+        if s is not None:
+            s.todos = todos
+    except Exception:
+        pass
+
+
+def has_active_todos() -> bool:
+    """True iff the current session has at least one todo that isn't completed —
+    i.e. the "Update your todos" nudge has something to act on. Returns False
+    when no todo list has been created yet or every item is `completed`, so the
+    nudge counter stops counting and the reminder stops firing in those cases."""
+    return any(t.get("status") in ("pending", "in_progress") for t in _current_todos())
+
+
+def _shape_todos(todos: list) -> list[dict]:
+    """Normalize a raw todo list to the frontend TodoItem shape
+    (id/content/activeForm/status/createdAt/updatedAt). The LLM's todo_write
+    only guarantees `content`+`status` (see _normalize_todos); fill stable
+    defaults for the rest so the TodoList renders without undefined React keys.
+    Index-based ids (`todo-{i}`) are stable across in-place status updates —
+    the common case — so items don't re-mount on every emit. Returns a fresh
+    list of plain dicts."""
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    out = []
+    for i, t in enumerate(todos or []):
+        if not isinstance(t, dict):
+            continue
+        content = t.get("content", "")
+        item = {
+            "id": t.get("id") or f"todo-{i}",
+            "content": content,
+            "activeForm": t.get("activeForm") or content,
+            "status": t.get("status", "pending"),
+            "createdAt": t.get("createdAt") or now,
+            "updatedAt": t.get("updatedAt") or now,
+        }
+        if t.get("depends"):
+            item["depends"] = t["depends"]
+        if t.get("claimedBy"):
+            item["claimedBy"] = t["claimedBy"]
+        out.append(item)
+    return out
+
+
+def todo_payload(todos: list | None = None) -> list[dict]:
+    """Frontend-shaped todo list for the `todo` event. Pass `todos` to shape a
+    specific list (e.g. reconstructed from the chat record on reconnect); omit
+    to read the current session's list."""
+    return _shape_todos(todos if todos is not None else _current_todos())
 
 @dataclass
 class Task:

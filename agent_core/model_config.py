@@ -16,7 +16,6 @@ FALLBACK_MODEL) for the live code paths; env remains the fallback source.
 import json
 import os
 import threading
-from pathlib import Path
 from openai import OpenAI
 from agent_core.env import REPO_ROOT
 

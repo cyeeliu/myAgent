@@ -85,7 +85,7 @@ export function ToolPanel({
     teamHistoryMessages,
     setTeamHistoryMessages,
   } = useSessionStore();
-  const { isProcessing, messages } = useChatStore();
+  const { messages } = useChatStore();
   const hydratedTeamHistorySessionRef = useRef<string | null>(null);
   const loadingTeamHistorySessionRef = useRef<string | null>(null);
 
@@ -212,35 +212,24 @@ export function ToolPanel({
     memoryUsage.rssMb == null
       ? '--'
       : `${memoryUsage.rssMb.toFixed(1)} MB${memoryUsage.usedPercent == null ? '' : ` (${memoryUsage.usedPercent.toFixed(1)}%)`}`;
-  let latestUserMessageIndex = -1;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i].role === 'user') {
-      latestUserMessageIndex = i;
-      break;
-    }
-  }
-  const hasVisibleReplyAfterLatestUser = messages
-    .slice(latestUserMessageIndex + 1)
-    .some(
-      (message) =>
-        (message.role === 'assistant' || message.id.startsWith('team-leader-')) &&
-        Boolean(message.content.trim())
-    );
-  const shouldMaskContextUsage =
-    isProcessing && latestUserMessageIndex >= 0 && !hasVisibleReplyAfterLatestUser;
-  const visibleContextCompressionBefore = shouldMaskContextUsage ? 0 : contextCompressionBefore;
-  const visibleContextCompressionAfter = shouldMaskContextUsage ? 0 : contextCompressionAfter;
-  const beforeK = ((visibleContextCompressionBefore ?? 0) / 1000).toFixed(1);
-  const afterK = ((visibleContextCompressionAfter ?? 0) / 1000).toFixed(1);
+  // Context-window usage is driven by the `context.usage` event, which the
+  // backend emits right after prepare_context — before the first token. So the
+  // store already holds the current turn's value by the time the reply streams.
+  // We render the raw store values directly instead of masking to 0 while
+  // isProcessing (the old mask flashed "0.0K/0.0K (--%)" during the send→TTFT
+  // gap on every message). The rate display falls back to '--' when there's no
+  // data yet (e.g. before the first context.usage event).
+  const beforeK = ((contextCompressionBefore ?? 0) / 1000).toFixed(1);
+  const afterK = ((contextCompressionAfter ?? 0) / 1000).toFixed(1);
   let compressionRateDisplay;
   if (
-    visibleContextCompressionBefore === 0 ||
-    visibleContextCompressionBefore === null ||
-    visibleContextCompressionAfter === 0 ||
-    visibleContextCompressionAfter === null
+    contextCompressionBefore === 0 ||
+    contextCompressionBefore === null ||
+    contextCompressionAfter === 0 ||
+    contextCompressionAfter === null
   ) {
     compressionRateDisplay = '--';
-  } else if (visibleContextCompressionAfter === visibleContextCompressionBefore) {
+  } else if (contextCompressionAfter === contextCompressionBefore) {
     compressionRateDisplay = '100.0';
   } else {
     compressionRateDisplay = Number.isFinite(contextCompressionRate)

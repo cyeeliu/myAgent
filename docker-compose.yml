@@ -52,6 +52,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       # Conversation-flow debug logging (agent_gateway/debug.py). 1/true to enable.
       - AGENT_DEBUG=${AGENT_DEBUG:-0}
+      # Context budget (tokens) — ToolPanel stat denominator + auto-compact trigger.
+      - AUTO_COMPACT_WINDOW=${AUTO_COMPACT_WINDOW:-128000}
     volumes:
       - ${HOME}/.myAgent/workspace:/app/workspace
       # On-disk session artifacts (transcript.md / history.json) browsed by the

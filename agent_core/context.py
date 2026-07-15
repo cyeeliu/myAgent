@@ -1,7 +1,7 @@
 """agent_core.context — extracted from code.py (s20 comprehensive agent)."""
 from agent_core.background import collect_background_results
 from agent_core.compaction import compact_history, estimate_size, micro_compact, snip_compact, tool_result_budget
-from agent_core.env import CONTEXT_LIMIT
+from agent_core.env import AUTO_COMPACT_WINDOW
 from agent_core.mcp import _mcp_clients
 from agent_core.memory import read_memory_index
 from agent_core.session import Session
@@ -27,7 +27,13 @@ def prepare_context(messages: list) -> list:
     messages[:] = tool_result_budget(messages)
     messages[:] = snip_compact(messages)
     messages[:] = micro_compact(messages)
-    if estimate_size(messages) > CONTEXT_LIMIT:
+    # Auto-compact when the message context (in tokens) reaches AUTO_COMPACT_WINDOW
+    # — the same value used as the ToolPanel stat denominator, so the stat hitting
+    # ~100% coincides with compaction firing. One env var governs both. Tokens via
+    # the ~4 chars/token heuristic (estimate_size is char-based). reactive_compact
+    # remains the prompt-too-long backstop if a single turn's system+tools+response
+    # still pushes the real request over the provider's hard limit.
+    if estimate_size(messages) // 4 > AUTO_COMPACT_WINDOW:
         messages[:] = compact_history(messages)
     return messages
 
@@ -42,5 +48,12 @@ def build_user_content(results: list[dict]) -> list[dict]:
 def inject_background_notifications(session: Session):
     notes = collect_background_results()
     if notes:
-        session.append_both({"role": "user", "content": [
+        # Context-only: the model needs to see the completed background result
+        # so it can react (summarize a build, follow up, …), but the
+        # <task_notification> wrapper is agent-internal — it must not land in
+        # the durable chat record (history.json / replay / live user bubble).
+        # The proactive assistant reply it triggers is a real turn and goes
+        # through append_both as usual. Use append_context so this stays in
+        # context_messages only.
+        session.append_context({"role": "user", "content": [
             {"type": "text", "text": note} for note in notes]})

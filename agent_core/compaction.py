@@ -10,6 +10,21 @@ from agent_core.env import KEEP_RECENT_TOOL_RESULTS, MODEL, PERSIST_THRESHOLD, _
 def estimate_size(messages: list) -> int:
     return len(json.dumps(messages, default=str))
 
+
+def estimate_tokens(messages: list, system: str = "", tools: list | None = None) -> int:
+    """Rough token count of the full context the LLM sees: system prompt +
+    messages + tool schemas. estimate_size is char-based (json.dumps length);
+    we convert with the ~4 chars/token heuristic. Mixed CJK/English content
+    makes this approximate, but it gives the UI a sensible, stable unit instead
+    of raw JSON chars (which jumped alarmingly on large tool results). The
+    auto-compact trigger (context.py) compares estimate_size//4 against
+    AUTO_COMPACT_WINDOW (tokens), and the ToolPanel stat denominator is the
+    same AUTO_COMPACT_WINDOW — one env var governs both."""
+    chars = estimate_size(messages) + len(system or "")
+    if tools:
+        chars += estimate_size(tools)
+    return chars // 4
+
 def block_type(block):
     return block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
 
@@ -104,13 +119,16 @@ def micro_compact(messages: list) -> list:
 def write_transcript(messages: list) -> Path:
     _transcript_dir().mkdir(parents=True, exist_ok=True)
     path = _transcript_dir() / f"transcript_{int(time.time())}.jsonl"
-    with path.open("w") as f:
+    # encoding="utf-8" + ensure_ascii=False so CJK/emoji are written as real
+    # characters, not \uXXXX escapes — the transcript is for human/UTF-8 tool
+    # inspection and the default ascii-escaping mangled Chinese into noise.
+    with path.open("w", encoding="utf-8") as f:
         for msg in messages:
-            f.write(json.dumps(msg, default=str) + "\n")
+            f.write(json.dumps(msg, default=str, ensure_ascii=False) + "\n")
     return path
 
 def summarize_history(messages: list) -> str:
-    conversation = json.dumps(messages, default=str)[:80000]
+    conversation = json.dumps(messages, default=str, ensure_ascii=False)[:80000]
     prompt = ("Summarize this coding-agent conversation so work can continue. "
               "Preserve current goal, key findings, changed files, remaining work, "
               "and user constraints.\n\n" + conversation)

@@ -5,7 +5,8 @@ import threading
 
 
 EVENT_KINDS = ("token", "text", "tool_start", "tool_result",
-               "error", "permission_request", "compacted", "done")
+               "error", "permission_request", "compacted", "done",
+               "context_usage", "task_notification", "memory", "todo")
 
 class EventSink:
     """Protocol: emit(kind, payload). Subclasses render or buffer the event."""
@@ -100,6 +101,7 @@ class Session:
     permission: Permission = None
     lock: threading.RLock = field(default_factory=threading.RLock)
     rounds_since_todo: int = 0
+    todos: list = field(default_factory=list)   # per-session todo list (todo_write); emitted to the TodoList panel
     interrupted: bool = False
     workdir: object = None        # per-session WORKDIR (workspace/<sid>/); set by gateway
     mcp_clients: dict = field(default_factory=dict)  # per-session MCP connections
@@ -121,6 +123,17 @@ class Session:
                 sink.append(msg)
             except Exception:
                 pass
+
+    def append_context(self, msg: dict) -> None:
+        """Append an agent-internal control message to the LLM context ONLY —
+        not to the durable record and not to record_sinks. Used for nudges the
+        model needs to see but the user must not: the todo `<reminder>`, the
+        max_tokens `CONTINUATION_PROMPT`, and the `[Compacted. ...]` marker.
+        Routing these through `append_both` leaked them to the live `chat.user`
+        event (record_sinks → WS → frontend user bubble) and into the durable
+        record (history.json / replay). They live in `context_messages` so the
+        LLM still acts on them; compaction may later trim them as usual."""
+        self.context_messages.append(msg)
 
     def emit(self, kind: str, payload: dict = None):
         if payload is None:

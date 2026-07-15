@@ -106,7 +106,12 @@ MAX_RECOVERY_RETRIES = 2
 
 BASE_DELAY_MS = 500
 
-CONTEXT_LIMIT = 50000
+# The agent's context budget in TOKENS — the single source of truth for BOTH
+# the ToolPanel context-usage stat denominator AND the auto-compact trigger
+# (prepare_context compacts when the message context reaches this many tokens).
+# One knob so the stat's "100%" coincides with when compaction fires. Default
+# 128000 (GLM-5 / GPT-4-class); set via the AUTO_COMPACT_WINDOW env var.
+AUTO_COMPACT_WINDOW = int(os.environ.get("AUTO_COMPACT_WINDOW", "128000"))
 
 KEEP_RECENT_TOOL_RESULTS = 3
 

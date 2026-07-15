@@ -24,6 +24,8 @@ _KIND_MAP = {
     "done": "chat.final",
     "user": "chat.user",
     "task_notification": "chat.task_notification",
+    "context_usage": "context.usage",
+    "todo": "todo.updated",
     "memory": "chat.memory",
     "ping": "heartbeat",
     "history_message": "history.message",

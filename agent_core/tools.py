@@ -15,7 +15,7 @@ from agent_core.env import workdir
 # circular import (mcp.assemble_tool_pool imports BUILTIN_* from tools).
 from agent_core.skills import load_skill
 from agent_core.subagent import spawn_subagent
-from agent_core.tasks import CURRENT_TODOS, claim_task, complete_task, create_task, get_task_json, list_tasks
+from agent_core.tasks import claim_task, complete_task, create_task, get_task_json, list_tasks, set_todos
 from agent_core.teammates import run_request_plan, run_request_shutdown, run_review_plan, spawn_teammate_thread
 from agent_core.worktrees import create_worktree, keep_worktree, remove_worktree
 
@@ -279,13 +279,12 @@ def _normalize_todos(todos):
     return todos, None
 
 def run_todo_write(todos: list) -> str:
-    global CURRENT_TODOS
     todos, error = _normalize_todos(todos)
     if error:
         return error
-    CURRENT_TODOS = todos
-    print(f"  \033[33m[todo] updated {len(CURRENT_TODOS)} item(s)\033[0m")
-    return f"Updated {len(CURRENT_TODOS)} todos"
+    set_todos(todos)
+    print(f"  \033[33m[todo] updated {len(todos)} item(s)\033[0m")
+    return f"Updated {len(todos)} todos"
 
 def run_create_worktree(name: str, task_id: str = "") -> str:
     return create_worktree(name, task_id)

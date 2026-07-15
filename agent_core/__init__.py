@@ -6,9 +6,9 @@ REPO_ROOT, OpenAI client, MODEL). Submodules are imported in dependency order
 so circular edges (tools<->teammates, tools<->subagent) resolve via deferred imports."""
 
 from agent_core.env import (
+    AUTO_COMPACT_WINDOW,
     BASE_DELAY_MS,
     CLI_ACTIVE,
-    CONTEXT_LIMIT,
     CONTINUATION_PROMPT,
     DEFAULT_MAX_TOKENS,
     ESCALATED_MAX_TOKENS,
@@ -80,7 +80,6 @@ from agent_core.agents import (
     scan_agents,
 )
 from agent_core.tasks import (
-    CURRENT_TODOS,
     Task,
     _task_path,
     _tasks_dir,
@@ -89,9 +88,12 @@ from agent_core.tasks import (
     complete_task,
     create_task,
     get_task_json,
+    has_active_todos,
     list_tasks,
     load_task,
     save_task,
+    set_todos,
+    todo_payload,
 )
 from agent_core.worktrees import (
     VALID_WT_NAME,
@@ -290,9 +292,8 @@ __all__ = [
     'bwrap_available',
     'sandbox_enabled',
     'sandbox_build_argv',
-    'CONTEXT_LIMIT',
+    'AUTO_COMPACT_WINDOW',
     'CONTINUATION_PROMPT',
-    'CURRENT_TODOS',
     'ChannelSink',
     'CliPermission',
     'CronJob',
@@ -373,6 +374,7 @@ __all__ = [
     'extract_text',
     'get_current_session',
     'get_task_json',
+    'has_active_todos',
     'has_tool_use',
     'idle_poll',
     'inject_background_notifications',
@@ -387,6 +389,8 @@ __all__ = [
     'list_tasks',
     'load_durable_jobs',
     'load_memories',
+    'set_todos',
+    'todo_payload',
     'load_skill',
     'get_skill',
     'set_skill_enabled',

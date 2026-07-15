@@ -37,13 +37,15 @@ PERMISSION_TIMEOUT = 120.0
 # and session-file writing so they don't render as user bubbles in the UI.
 CONTINUATION_PROMPT = "Continue from the previous response. Do not repeat completed work."
 TODO_REMINDER_PREFIX = "<reminder>"
+TASK_NOTIFICATION_PREFIX = "<task_notification>"
 
 
 def _is_internal_user_prompt(text: str) -> bool:
     """True if this user message is an agent-internal nudge, not a real turn."""
     return (text == CONTINUATION_PROMPT
             or text.startswith("[Compacted.")
-            or text.startswith(TODO_REMINDER_PREFIX))
+            or text.startswith(TODO_REMINDER_PREFIX)
+            or text.startswith(TASK_NOTIFICATION_PREFIX))
 
 # On-disk session artifacts root. The jiuwenswarm frontend's SessionsPanel browses
 # `agent/sessions/{sid}/` via the /file-api REST routes (rooted at REPO_ROOT);
@@ -129,6 +131,27 @@ def _write_session_files(sid: str, record: list) -> None:
         pass
 
 
+def _last_todos_from_record(record: list) -> list:
+    """Scan the chat record for the last todo_write tool_use and return its
+    raw `todos` input (or [] if none). Used to repopulate Session.todos on
+    hydrate so has_active_todos() stays correct across eviction/restart, and
+    the nudge logic doesn't lose track of unfinished todos."""
+    last: list | None = None
+    for msg in record or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if code._block_type(b) == "tool_use" and code._block_attr(b, "name") == "todo_write":
+                inp = code._block_attr(b, "input", {})
+                tlist = inp.get("todos") if isinstance(inp, dict) else None
+                if isinstance(tlist, list):
+                    last = tlist
+    return last or []
+
+
 def synthesize_frames(record: list) -> list[dict]:
     """Rebuild replay frames from the append-only chat record so a freshly
     hydrated session can replay its FULL conversation. Returns frames with
@@ -136,6 +159,7 @@ def synthesize_frames(record: list) -> list[dict]:
     to N. Reads from `record` (never compacted), not the LLM context."""
     seq = 0
     frames: list[dict] = []
+    last_todos: list | None = None  # reconstructed from the last todo_write tool_use
     for msg in record:
         if not isinstance(msg, dict):
             continue
@@ -173,6 +197,22 @@ def synthesize_frames(record: list) -> list[dict]:
                                        "payload": {"id": code._block_attr(b, "id"),
                                                    "name": code._block_attr(b, "name"),
                                                    "input": code._block_attr(b, "input", {}), "seq": seq}})
+                        # Track the last todo_write so a reconnect whose live
+                        # stream expired (>24h, replay synthesized from the
+                        # chat record) still repopulates the TodoList panel.
+                        if code._block_attr(b, "name") == "todo_write":
+                            inp = code._block_attr(b, "input", {})
+                            tlist = inp.get("todos") if isinstance(inp, dict) else None
+                            if isinstance(tlist, list):
+                                last_todos = tlist
+    # Re-emit the final todo state as the last replay frame so the panel
+    # restores on a synthesized (>24h) reconnect. Within 24h the original
+    # live `todo` frame is replayed from the EventPipe and this is redundant
+    # (harmless — setTodos is idempotent).
+    if last_todos is not None:
+        seq += 1
+        frames.append({"seq": seq, "kind": "todo",
+                       "payload": {"todos": code.todo_payload(last_todos), "seq": seq}})
     return frames
 
 
@@ -186,7 +226,7 @@ class PipeSink(EventSink):
     def emit(self, kind: str, payload: dict):
         seq = payload.get("seq", 0)
         if kind in ("token", "done", "user", "tool_start", "tool_result", "error",
-                    "history_message"):
+                    "history_message", "context_usage", "todo"):
             debug("pipe<<emit kind=%r seq=%r", kind, seq)
         self._pipe.publish(seq, kind, payload)
 
@@ -325,7 +365,12 @@ class GatewaySession:
             if not notifications:
                 return
             self.last_activity = time.time()
-            self.agent.append_both({"role": "user", "content": [
+            # Context-only: inject the completed background result into the
+            # LLM context so the fresh turn can react to it, but keep it out of
+            # the durable chat record — <task_notification> is agent-internal
+            # and must not appear in history.json / replay / as a user bubble.
+            # The assistant reply this triggers is a real turn (append_both).
+            self.agent.append_context({"role": "user", "content": [
                 {"type": "text", "text": note} for note in notifications]})
             self.agent.interrupted = False
             db.save_chat_record(self.session_id, self.agent.record,
@@ -389,6 +434,10 @@ class SessionManager:
         agent.workdir = SESSION_STATE_ROOT / sid
         if chat_record:
             agent.record = list(chat_record)
+            # Repopulate per-session todos from the last todo_write in the record
+            # so has_active_todos() / the nudge stay correct after hydrate, and
+            # the TodoList panel has state before any new todo_write fires.
+            agent.todos = _last_todos_from_record(agent.record)
             # llm_context may be missing on old/half-migrated rows; derive from
             # the full record (uncompacted) so the first turn has a working context.
             agent.context_messages = list(llm_context) if llm_context else list(chat_record)

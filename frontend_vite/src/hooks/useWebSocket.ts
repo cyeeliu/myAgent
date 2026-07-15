@@ -923,19 +923,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         return;
       }
 
-      const isInitialUserMessage = !useChatStore
-        .getState()
-        .messages.some((message) => message.role === 'user');
-      if (isInitialUserMessage) {
-        holdContextUsageUntilVisibleReplyRef.current = true;
-        contextUsageHoldSessionIdRef.current = sessionId;
-        pendingContextUsageRef.current = null;
-        setContextCompressionStats({
-          rate: 0,
-          beforeCompressed: 0,
-          afterCompressed: 0,
-        });
-      }
+      // Context-usage is applied immediately when the `context.usage` event
+      // arrives (right after prepare_context, before the first token) and then
+      // updated live during streaming. No hold/reset-to-0 here — that flashed
+      // "0.0K/0.0K" during the send→TTFT gap. The stat simply carries over the
+      // previous turn's value until the new one arrives.
 
       resetContextCompressionTurn();
       userInputVersionRef.current += 1;
@@ -1956,16 +1948,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ? payload.tokens_used
             : null;
         const stats = { rate, beforeCompressed: contextMax, afterCompressed: tokensUsed };
-        if (holdContextUsageUntilVisibleReplyRef.current) {
-          pendingContextUsageRef.current = stats;
-          setContextCompressionStats({
-            rate: 0,
-            beforeCompressed: 0,
-            afterCompressed: 0,
-          });
-        } else {
-          setContextCompressionStats(stats);
-        }
+        // Apply immediately — the backend emits context.usage after prepare_context
+        // and periodically during streaming, so holding for the first visible reply
+        // would just freeze the stat at 0 during loading.
+        setContextCompressionStats(stats);
         console.debug('[ws] context.usage', {
           session_id: payload.session_id,
           rate,

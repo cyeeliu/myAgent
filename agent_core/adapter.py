@@ -5,6 +5,7 @@ import os
 import time as _time
 from agent_core.blocks import _TextBlock, _ToolUseBlock, _block_attr, _block_type
 from agent_core import model_config
+from agent_core.env import AUTO_COMPACT_WINDOW
 
 _ADBG = os.environ.get("AGENT_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -179,6 +180,23 @@ def chat_create(model, system=None, messages=None, tools=None,
     interrupted = False
     _t0 = _time.monotonic()
     _chunk_no = 0
+    # Context-window usage base (input context size, in tokens) for live stat
+    # updates during streaming. Deferred import — compaction imports adapter, so
+    # a top-level import would cycle. We emit context_usage periodically as
+    # tokens arrive so the ToolPanel stat grows in real time instead of jumping
+    # once per turn. Base includes system + messages + tools (the full context
+    # the LLM sees), matching call_llm's pre-call emit.
+    _ctx_base = None
+    _ctx_max = 0
+    if events is not None:
+        try:
+            from agent_core.compaction import estimate_tokens
+            _ctx_base = estimate_tokens(messages, system, tools)
+            _ctx_max = AUTO_COMPACT_WINDOW
+        except Exception:
+            _ctx_base = None
+            _ctx_max = 0
+    _last_ctx_emit = _t0
     if _ADBG:
         _adbg("stream call start model=%r msgs=%d tools=%d", model, len(oai_msgs), len(oai_tools))
     for chunk in model_config.client().chat.completions.create(**kwargs):
@@ -205,6 +223,19 @@ def chat_create(model, system=None, messages=None, tools=None,
             text_parts.append(delta.content)
             if events is not None:
                 events.emit("token", {"text": delta.content})
+                # Throttled live context-usage update (~2.5/s) so the ToolPanel
+                # stat tracks the growing response during streaming. Streamed
+                # text chars → tokens via the same ~4 chars/token heuristic as
+                # estimate_tokens so units stay consistent with _ctx_base.
+                if _ctx_base is not None and _ctx_max:
+                    _now = _time.monotonic()
+                    if _now - _last_ctx_emit >= 0.4:
+                        _used = _ctx_base + len("".join(text_parts)) // 4
+                        _rate = (_used / _ctx_max * 100) if _ctx_max else 0
+                        events.emit("context_usage",
+                                    {"tokens_used": _used, "context_max": _ctx_max,
+                                     "rate": round(_rate, 1)})
+                        _last_ctx_emit = _now
         if getattr(delta, "tool_calls", None):
             for tc in delta.tool_calls:
                 idx = tc.index if tc.index is not None else 0
@@ -223,6 +254,14 @@ def chat_create(model, system=None, messages=None, tools=None,
         # args and acting on it would be wrong. The streamed tokens already went
         # to the UI; history stays clean for the next turn.
         return SimpleNamespace(content=[], stop_reason="interrupted", interrupted=True)
+
+    # Final context-usage update reflecting the full streamed response length.
+    if _ctx_base is not None and _ctx_max and events is not None:
+        _used = _ctx_base + len("".join(text_parts)) // 4
+        _rate = (_used / _ctx_max * 100) if _ctx_max else 0
+        events.emit("context_usage",
+                    {"tokens_used": _used, "context_max": _ctx_max,
+                     "rate": round(_rate, 1)})
 
     blocks = []
     if text_parts:
