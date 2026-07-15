@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from agent_gateway.debug import debug, is_enabled as _debug_enabled
 
 import code
-from agent_gateway.sessions import manager, GatewaySession
+from agent_gateway.sessions import manager, GatewaySession, cleanup_session_artifacts
 from agent_gateway.schemas import (
     CreateSession, UserMessage, PermissionResponse,
     AgentCreate, AgentUpdate, ModelConfig,
@@ -179,6 +179,7 @@ async def delete_session(sid: str):
         gs.interrupt()
         manager.drop(sid)
     await asyncio.to_thread(db.delete_session_row, sid)
+    await asyncio.to_thread(cleanup_session_artifacts, sid)
     return {"ok": True}
 
 

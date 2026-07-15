@@ -38,12 +38,13 @@ def prepare_context(messages: list) -> list:
     return messages
 
 def build_user_content(results: list[dict]) -> list[dict]:
-    # Tool results and completed background notifications are both returned to
-    # the model as user-side content, matching the tool_result feedback loop.
-    content = list(results)
-    for note in collect_background_results():
-        content.append({"type": "text", "text": note})
-    return content
+    # Tool results are returned to the model as user-side content. Completed
+    # background-task notifications are NOT folded in here — that would write
+    # the <task_notification> wrapper into the durable chat record (append_both
+    # at the call site) and leak it into history.json / replay / the live chat
+    # bubble. They reach the model via inject_background_notifications instead,
+    # which uses append_context (context-only, never the record).
+    return list(results)
 
 def inject_background_notifications(session: Session):
     notes = collect_background_results()

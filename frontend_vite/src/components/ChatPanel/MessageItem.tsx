@@ -18,6 +18,7 @@ import {
   FileDownloadItem,
   ContextCompressionRuntime,
   ContextCompressionSummary,
+  WidgetPayload,
 } from '../../types';
 import { StreamingContent } from './StreamingContent';
 import { ToolCallDisplay } from './ToolCallDisplay';
@@ -47,6 +48,46 @@ export function MarkdownMessageBody({
       className={clsx('chat-text chat-markdown', className)}
       testId={testId}
     />
+  );
+}
+
+/**
+ * show_widget 工具生成的内联 SVG/HTML 小部件渲染器。
+ *
+ * 安全模型：内容始终在 sandboxed iframe (srcDoc) 里渲染，sandbox 只开 allow-scripts
+ * （不开 allow-same-origin），所以小部件里的脚本无法访问父页面 DOM / cookie /
+ * localStorage，也无法 top-level 导航。SVG 包一层完整 HTML 文档居中显示；HTML 直接
+ * 作为文档体。这样模型生成的任意 SVG/HTML 都不会成为 XSS 向量。
+ */
+export function WidgetView({ widget }: { widget: WidgetPayload }) {
+  const doc =
+    widget.type === 'svg'
+      ? `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:8px;display:flex;align-items:center;justify-content:center;min-height:100vh;background:transparent}svg{max-width:100%;height:auto}</style></head><body>${widget.content}</body></html>`
+      : `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;background:transparent}</style></head><body>${widget.content}</body></html>`;
+  const style: React.CSSProperties = {
+    width: widget.width ? `${widget.width}px` : '100%',
+    // iframe height: 'auto' collapses to 0 (iframes don't size to content),
+    // which renders a blank widget. Default to a real height; let callers
+    // override via width/height. SVG scales to fit inside (max-width:100%).
+    height: widget.height ? `${widget.height}px` : '320px',
+    minHeight: '120px',
+    border: '1px solid var(--border, #e2e8f0)',
+    borderRadius: '8px',
+    background: 'var(--card, #fff)',
+  };
+  return (
+    <div className="chat-widget my-2 animate-fade-in" data-testid="chat-widget">
+      {widget.title ? (
+        <div className="text-xs text-text-muted mb-1">{widget.title}</div>
+      ) : null}
+      <iframe
+        title={widget.title || 'widget'}
+        srcDoc={doc}
+        sandbox="allow-scripts"
+        style={style}
+        className="w-full"
+      />
+    </div>
   );
 }
 
@@ -204,6 +245,7 @@ export function MessageItem({
     audioMime,
     mediaItems,
     fileItems,
+    widget,
   } = message;
   const [hasAutoSpoken, setHasAutoSpoken] = useState(false);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
@@ -500,7 +542,7 @@ export function MessageItem({
   const visibleMediaItems = mediaItems?.length ? mediaItems : null;
   const visibleFileItems = fileItems?.length ? fileItems : null;
   const hasBubbleContent =
-    isUser || Boolean(content) || Boolean(visibleMediaItems) || Boolean(visibleFileItems);
+    isUser || Boolean(content) || Boolean(visibleMediaItems) || Boolean(visibleFileItems) || Boolean(widget);
 
   return (
     <div className={clsx(
@@ -553,6 +595,9 @@ export function MessageItem({
                 )}
                 {visibleFileItems && (
                   <FileDownloadList files={visibleFileItems} />
+                )}
+                {widget && (
+                  <WidgetView widget={widget} />
                 )}
               </>
             )}

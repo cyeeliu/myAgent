@@ -54,6 +54,14 @@ export interface TeamMemberContextCompressionState {
   summary?: ContextCompressionSummary;
 }
 
+export interface WidgetPayload {
+  type: 'svg' | 'html';
+  content: string;
+  title?: string;
+  width?: number;
+  height?: number;
+}
+
 export interface Message {
   id: string;
   role: MessageRole;
@@ -74,6 +82,8 @@ export interface Message {
   // 主动推荐消息标记
   isProactiveRecommendation?: boolean;
   proactiveType?: 'skill_recommend' | 'task_reminder' | 'need_exploration';
+  // show_widget 工具生成的内联 SVG/HTML 小部件
+  widget?: WidgetPayload;
 }
 
 export interface ToolCall {

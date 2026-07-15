@@ -20,6 +20,8 @@ _KIND_MAP = {
     "tool_result": "chat.tool_result",
     "error": "chat.error",
     "permission_request": "chat.ask_user_question",
+    "ask_user": "chat.ask_user_question",
+    "widget": "chat.widget",
     "compacted": "chat.compacted",
     "done": "chat.final",
     "user": "chat.user",

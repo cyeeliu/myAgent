@@ -66,6 +66,7 @@ class EventPipe:
     async def live(self, after_seq: int) -> AsyncIterator[Optional[dict]]: ...
     def seed(self, frames: list[dict]) -> None: ...
     def count(self) -> int: ...
+    def clear(self) -> None: ...
 
 
 class InMemoryPipe(EventPipe):
@@ -108,6 +109,16 @@ class InMemoryPipe(EventPipe):
     def count(self) -> int:
         with self._lock:
             return len(self._buf)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._buf.clear()
+        # Drain the queue so live() doesn't re-yield stale frames.
+        try:
+            while True:
+                self._q.get_nowait()
+        except _queue.Empty:
+            pass
 
 
 class RedisStreamPipe(EventPipe):
@@ -162,6 +173,9 @@ class RedisStreamPipe(EventPipe):
     def count(self) -> int:
         return _sync_r.xlen(self._key)
 
+    def clear(self) -> None:
+        _sync_r.delete(self._key)
+
 
 def make_pipe(sid: str) -> EventPipe:
     """Pick the pipe implementation based on whether Redis is initialized."""
@@ -182,6 +196,7 @@ class ChatStreamPipe:
     def replay(self) -> list[dict]: ...
     def seed(self, messages: list[dict]) -> None: ...
     def count(self) -> int: ...
+    def clear(self) -> None: ...
 
 
 class InMemoryChatPipe(ChatStreamPipe):
@@ -204,6 +219,10 @@ class InMemoryChatPipe(ChatStreamPipe):
     def count(self) -> int:
         with self._lock:
             return len(self._msgs)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._msgs = []
 
 
 class RedisChatPipe(ChatStreamPipe):
@@ -230,6 +249,9 @@ class RedisChatPipe(ChatStreamPipe):
 
     def count(self) -> int:
         return _sync_r.xlen(self._key)
+
+    def clear(self) -> None:
+        _sync_r.delete(self._key)
 
 
 def make_chat_pipe(sid: str) -> ChatStreamPipe:

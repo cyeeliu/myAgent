@@ -62,6 +62,38 @@ code.set_workspace_dir(code.REPO_ROOT / "workspace")
 SESSION_STATE_ROOT = code.workspace_dir() / ".sessions"
 
 
+def cleanup_session_artifacts(sid: str) -> None:
+    """Remove all on-disk + Redis artifacts for a session. Called on delete so
+    the SessionsPanel file browser and the workspace .sessions/ tree don't
+    accumulate stale dirs, and a reused session_id doesn't hydrate from a
+    previous run's leftover state. Best-effort: a cleanup failure must not
+    block the delete (the Postgres row is already gone by the time this runs
+    in the delete path). Idempotent — missing dirs/keys are fine."""
+    if not sid or not isinstance(sid, str) or "/" in sid or "\\" in sid or sid in (".", ".."):
+        return  # guard against path traversal / bogus ids
+    import shutil
+    # 1. On-disk session files (transcript.md, history.json) under /app/agent/sessions/<sid>/
+    try:
+        shutil.rmtree(SESSION_FILES_ROOT / sid, ignore_errors=True)
+    except Exception:
+        pass
+    # 2. Session-bound state (.tasks/.transcripts/.task_outputs/.worktrees/
+    #    .mailboxes/.scheduled_tasks.json) under workspace/.sessions/<sid>/
+    try:
+        shutil.rmtree(SESSION_STATE_ROOT / sid, ignore_errors=True)
+    except Exception:
+        pass
+    # 3. Redis hot pipes (live stream / chat record stream / ctx hash). These
+    #    have a 24h TTL so they'd expire anyway, but deleting now frees memory
+    #    immediately and prevents a same-id resurrect from seeing stale frames.
+    try:
+        if pipe_mod.redis_enabled():
+            r = pipe_mod._sync_r
+            r.delete(f"stream:{sid}", f"chat:{sid}", f"ctx:{sid}")
+    except Exception:
+        pass
+
+
 def _stringify(content: Any) -> str:
     """Flatten a message content (str or list of blocks) to a plain string.
 
@@ -205,6 +237,16 @@ def synthesize_frames(record: list) -> list[dict]:
                             tlist = inp.get("todos") if isinstance(inp, dict) else None
                             if isinstance(tlist, list):
                                 last_todos = tlist
+                        # Re-emit show_widget artifacts positionally so a
+                        # synthesized (>24h) reconnect still renders the SVG/HTML
+                        # widget the agent produced. Within 24h the original live
+                        # `widget` frame is replayed from the EventPipe.
+                        if code._block_attr(b, "name") == "show_widget":
+                            inp = code._block_attr(b, "input", {})
+                            if isinstance(inp, dict) and inp.get("content"):
+                                seq += 1
+                                frames.append({"seq": seq, "kind": "widget",
+                                               "payload": {**inp, "seq": seq}})
     # Re-emit the final todo state as the last replay frame so the panel
     # restores on a synthesized (>24h) reconnect. Within 24h the original
     # live `todo` frame is replayed from the EventPipe and this is redundant
@@ -226,7 +268,7 @@ class PipeSink(EventSink):
     def emit(self, kind: str, payload: dict):
         seq = payload.get("seq", 0)
         if kind in ("token", "done", "user", "tool_start", "tool_result", "error",
-                    "history_message", "context_usage", "todo"):
+                    "history_message", "context_usage", "todo", "widget", "ask_user"):
             debug("pipe<<emit kind=%r seq=%r", kind, seq)
         self._pipe.publish(seq, kind, payload)
 
@@ -253,6 +295,7 @@ class GatewaySession:
     ctx_store: pipe_mod.ContextStore     # ctx:{sid}  — compacted LLM context snapshot
     loop: asyncio.AbstractEventLoop
     pending_permissions: dict[str, Future] = field(default_factory=dict)
+    pending_asks: dict[str, Future] = field(default_factory=dict)
     _perm_lock: threading.Lock = field(default_factory=threading.Lock)
     _worker: Optional[threading.Thread] = None
     _worker_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -273,6 +316,26 @@ class GatewaySession:
         if fut is None or fut.done():
             return False
         fut.set_result({"allow": allow, "modify": modify})
+        return True
+
+    # ── ask_user future plumbing ──
+    # The ask_user tool emits an `ask_user` event (→ chat.ask_user_question in
+    # the wire layer) and blocks on a future; the client answers via
+    # chat.send{request_id, answers, source:"ask_user_interrupt"} and respond_ask
+    # resolves it. Mirrors the permission future pattern.
+
+    def ask_resolver(self, request_id: str) -> Future:
+        fut: Future = Future()
+        with self._perm_lock:
+            self.pending_asks[request_id] = fut
+        return fut
+
+    def respond_ask(self, request_id: str, answers) -> bool:
+        with self._perm_lock:
+            fut = self.pending_asks.pop(request_id, None)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(answers)
         return True
 
     # ── user message → run one agent turn in a thread ──
@@ -458,12 +521,28 @@ class SessionManager:
             # Materialize on-disk session files so the SessionsPanel file browser
             # has previewable content for a hydrated (restored) session.
             _write_session_files(sid, agent.record)
+        else:
+            # No chat_record → genuinely fresh session (minted id) OR a self-heal
+            # of a stale sid that isn't in the DB (frontend reused a session_id
+            # from sessionStorage after a gateway/DB restart). Redis is a separate
+            # container and survives a gateway restart, so stream:{sid}/chat:{sid}
+            # may still hold the PREVIOUS session's frames (24h TTL). If we leave
+            # them, agent._seq stays 0 while the pipe has N old frames, and the
+            # first chat.send's drain runs replay_since(0) → replays every old
+            # frame → the previous conversation floods the "new" session. Clear any
+            # stale pipe state so the fresh session starts clean.
+            if ep.count() > 0:
+                ep.clear()
+            if chat_pipe.count() > 0:
+                chat_pipe.clear()
+            agent._seq = 0
         gs = GatewaySession(session_id=sid, transport=agent.transport,
                             agent=agent, pipe=ep, chat_pipe=chat_pipe,
                             ctx_store=ctx_store, loop=loop,
                             created_at=created_at or time.time(),
                             last_activity=last_activity or time.time())
         permission.resolver = gs._resolver
+        agent.ask_resolver = gs.ask_resolver
         # When a background task finishes after the turn ended, re-trigger the
         # loop so the model reacts to the result instead of orphaning it until
         # the next user message.

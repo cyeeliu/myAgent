@@ -1254,6 +1254,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ...approvalSchemaPayload,
             ...evolutionMetaPayload,
           });
+          // The answer unblocks the in-flight turn (ask_user/permission future
+          // resolves → worker continues → next LLM call). There's a gap between
+          // submitting the answer and the first post-answer event (chat.delta /
+          // chat.tool_call) during which the UI would otherwise show no
+          // indicator and look stalled. Re-assert processing+thinking so the
+          // ThinkingIndicator stays visible until chat.final clears it.
+          setProcessing(true);
+          setThinking(true);
         } else if (effectiveSource === 'activate_confirm') {
           const action = answers[0]?.selected_options[0] === '拒绝' ? 'reject' : 'accept';
           const interactionId = requestId || useHarnessStore.getState().activateInteraction?.interactionId || '';
@@ -1289,7 +1297,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         onErrorRef.current?.(webError.message || t('network.submitAnswerFailed'));
       }
     },
-    [request, setConnectionStats, setPendingQuestion, t]
+    [request, setConnectionStats, setPendingQuestion, setProcessing, setThinking, t]
   );
 
   // activeSessionIdRef 已在渲染阶段同步更新，无需额外 effect
@@ -1932,6 +1940,27 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         const todos = Array.isArray(payload.todos) ? payload.todos : [];
         setTodos(todos as Parameters<typeof setTodos>[0]);
+      }),
+      webClient.on('chat.widget', ({ payload }) => {
+        if (!shouldHandleSessionEvent(payload)) return;
+        if (shouldDropDuplicatedEvent('chat.widget', payload)) return;
+        const wType = payload.type === 'html' ? 'html' : 'svg';
+        const content = typeof payload.content === 'string' ? payload.content : '';
+        if (!content) return;
+        const ts = eventTimestampMs(payload);
+        addMessage({
+          id: stableEventId('widget', payload.session_id, payload.seq, ts),
+          role: 'assistant',
+          content: typeof payload.title === 'string' && payload.title ? payload.title : '',
+          timestamp: new Date(ts).toISOString(),
+          widget: {
+            type: wType,
+            content,
+            title: typeof payload.title === 'string' ? payload.title : undefined,
+            width: typeof payload.width === 'number' ? payload.width : undefined,
+            height: typeof payload.height === 'number' ? payload.height : undefined,
+          },
+        });
       }),
       webClient.on('context.usage', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;

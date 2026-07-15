@@ -49,6 +49,29 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
             # it as a fresh session under the same id instead of erroring, so
             # the user can always converse.
             gs = await asyncio.to_thread(sessions.create, "ws", loop, sid)
+        # ask_user / permission answers arrive as chat.send{request_id, answers,
+        # source} (see frontend sendUserAnswer). Route them to the matching
+        # future resolver instead of posting an empty user message.
+        rid = params.get("request_id")
+        if rid:
+            answers = params.get("answers") or []
+            source = params.get("source") or ""
+            if source == "ask_user_interrupt":
+                ok_ans = gs.respond_ask(rid, answers)
+            else:
+                # permission_interrupt / confirm_interrupt / etc. → grant.
+                allow = True
+                modify = None
+                if isinstance(answers, list) and answers:
+                    a0 = answers[0]
+                    if isinstance(a0, dict):
+                        allow = bool(a0.get("allow", a0.get("selected", True)))
+                        modify = a0.get("modify")
+                ok_ans = gs.grant(rid, allow, modify)
+            if not ok_ans:
+                return AgentResponse(req.request_id, ok=False,
+                                     error="no pending question with that id")
+            return AgentResponse(req.request_id, payload={"ok": True})
         text = params.get("content") or params.get("text") or ""
         if not isinstance(text, str):
             text = str(text)
@@ -125,7 +148,9 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
             gs.interrupt()
             sessions.drop(gs.session_id)
         from agent_gateway import db
+        from agent_gateway.sessions import cleanup_session_artifacts
         await asyncio.to_thread(db.delete_session_row, sid)
+        await asyncio.to_thread(cleanup_session_artifacts, sid)
         return AgentResponse(req.request_id, payload={"ok": True})
 
     if m == ReqMethod.SESSION_STATUS:

@@ -5,8 +5,8 @@ import threading
 
 
 EVENT_KINDS = ("token", "text", "tool_start", "tool_result",
-               "error", "permission_request", "compacted", "done",
-               "context_usage", "task_notification", "memory", "todo")
+               "error", "permission_request", "ask_user", "widget", "compacted",
+               "done", "context_usage", "task_notification", "memory", "todo")
 
 class EventSink:
     """Protocol: emit(kind, payload). Subclasses render or buffer the event."""
@@ -99,6 +99,9 @@ class Session:
     sinks: list = field(default_factory=list)
     record_sinks: list = field(default_factory=list)  # chat-record append hooks (e.g. chat:{sid} stream)
     permission: Permission = None
+    ask_resolver: object = None   # gateway hook: ask_resolver(request_id) → Future;
+                                 # set by GatewaySession so the ask_user tool can
+                                 # block on a user answer from the WS client.
     lock: threading.RLock = field(default_factory=threading.RLock)
     rounds_since_todo: int = 0
     todos: list = field(default_factory=list)   # per-session todo list (todo_write); emitted to the TodoList panel
