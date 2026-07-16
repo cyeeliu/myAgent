@@ -639,6 +639,53 @@ def run_check_inbox() -> str:
         lines.append(f"  [{m['from']}]{tag} {m['content'][:200]}")
     return "\n".join(lines)
 
+
+def run_wait(sources: list = None, timeout: int = 300) -> str:
+    """Block until a categorized wake signal (user/team/background) or timeout,
+    with NO LLM polling during the wait. Use this instead of `bash sleep` when
+    waiting for async events — it costs one LLM call to decide to wait and one
+    after the event, not one per 60s. After waking, call check_inbox (team) or
+    task_output (background) to read the data the wake signals.
+
+    sources: which wake sources to accept (default all). Wakes for other sources
+    are dropped (their data stays queued). timeout: seconds, default 300, max 3600."""
+    import time as _time
+    from agent_core.mcp import get_current_session
+    from agent_core.env import session_dir
+    from agent_core.bus import (BUS, register_lead_listener,
+                                unregister_lead_listener)
+    s = get_current_session()
+    wl = getattr(s, "wait_lock", None) if s is not None else None
+    if wl is None:
+        # CLI fallback: no session wait_lock — no signals available, just sleep.
+        _time.sleep(min(max(int(timeout or 30), 1), 30))
+        return "(wait: no session wait_lock; slept)"
+    srcs = list(sources) if sources else ["user", "team", "background"]
+    timeout_s = max(1, min(int(timeout or 300), 3600))
+    sd = str(session_dir())
+    # Register the team listener BEFORE the race-guard has_inbox check so a
+    # message arriving between the check and the wait still pokes the condition.
+    # The listener just pokes the wait_lock; the mailbox line is already written
+    # by BUS.send, so check_inbox will find the data after we wake.
+    if "team" in srcs:
+        register_lead_listener(
+            sd, lambda content, mtype: wl.wake(
+                "team", f"{mtype}: {str(content)[:80]}"))
+    try:
+        # Race guard: a team message may have arrived between the agent's last
+        # check_inbox and this wait. If so, don't block — return immediately so
+        # the agent calls check_inbox and drains it.
+        if "team" in srcs and BUS.has_inbox("lead"):
+            return "Woken by team: (pending inbox — call check_inbox)"
+        reason = wl.wait(srcs, timeout_s)
+    finally:
+        unregister_lead_listener(sd)
+    src = reason.get("source", "timeout")
+    detail = reason.get("detail", "")
+    if src == "timeout":
+        return f"(wait timed out after {timeout_s}s — no {srcs} signals)"
+    return f"Woken by {src}" + (f": {detail}" if detail else "")
+
 def run_connect_mcp(name: str, command: str = None,
                      args: list = None, env: dict = None) -> str:
     from agent_core.mcp import connect_mcp
@@ -853,8 +900,28 @@ BUILTIN_TOOLS = [
                       "required": ["team_name", "content"]}},
     {"name": "check_inbox",
      "description": "Check inbox for messages and protocol responses from team "
-                    "leaders (results, submitted plans).",
+                    "leaders (results, submitted plans). The leader sends multiple "
+                    "updates as it works; if the team is still active and this "
+                    "returned an interim/non-final report, call "
+                    "wait(sources=[\"team\",\"background\"], timeout=600) next and "
+                    "check_inbox again rather than ending the turn.",
      "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "wait",
+     "description":
+     "Block until a wake signal (user/team/background) or timeout — use this "
+     "INSTEAD OF bash sleep when waiting for async events (a team leader reply, "
+     "a background task finishing, a new user message). No LLM polling happens "
+     "during the wait, so it costs one LLM call to decide to wait and one after "
+     "the event, not one per 60s. After waking, call check_inbox (team) or "
+     "task_output (background) to read the data. sources: which wake sources to "
+     "accept (default all). timeout: seconds (default 300, max 3600).",
+     "input_schema": {"type": "object",
+                      "properties": {
+                          "sources": {"type": "array",
+                                      "items": {"type": "string",
+                                                "enum": ["user", "team", "background"]}},
+                          "timeout": {"type": "integer"}},
+                      "required": []}},
     {"name": "review_plan",
      "description": "Approve or reject a submitted plan (验收 — used by the main "
                     "loop to accept a team leader's plan).",
@@ -915,6 +982,7 @@ BUILTIN_HANDLERS = {
     "team_info": run_team_info,
     "send_to_leader": run_send_to_leader,
     "check_inbox": run_check_inbox,
+    "wait": run_wait,
     "review_plan": run_review_plan,
     "create_worktree": run_create_worktree,
     "remove_worktree": run_remove_worktree,

@@ -299,6 +299,10 @@ class GatewaySession:
     _perm_lock: threading.Lock = field(default_factory=threading.Lock)
     _worker: Optional[threading.Thread] = None
     _worker_lock: threading.Lock = field(default_factory=threading.Lock)
+    # User messages posted while the agent was blocked in the `wait` tool. The
+    # current turn is interrupted (wait_lock.wake("user")) and these are drained
+    # one per turn-end in _run_turn's finally, each starting a fresh turn.
+    _pending_user_msgs: list = field(default_factory=list)
     created_at: float = field(default_factory=lambda: __import__("time").time())
     last_activity: float = field(default_factory=lambda: __import__("time").time())
 
@@ -342,9 +346,26 @@ class GatewaySession:
 
     def post_message(self, text: str) -> bool:
         """Append a user message and run one agent_loop turn in a worker thread.
-        Returns False if a turn is already in flight."""
+        Returns False if a turn is already in flight — unless the in-flight turn
+        is blocked in the `wait` tool, in which case the wait is interrupted
+        (wake "user") and this message is queued to run in a fresh turn after
+        the current one unwinds."""
         with self._worker_lock:
             if self._worker is not None and self._worker.is_alive():
+                # Turn in flight. If it's blocked in the wait tool, poke it so
+                # the loop exits (interrupted) at the top of its next iteration
+                # and this message runs in a fresh turn after it unwinds.
+                # Otherwise the turn is genuinely busy (LLM call, tool exec) —
+                # reject so the caller can retry / surface "busy".
+                wl = getattr(self.agent, "wait_lock", None)
+                if wl is not None and wl.is_waiting():
+                    self.agent.interrupted = True
+                    wl.wake("user", text[:200])
+                    self._pending_user_msgs.append(text)
+                    self.last_activity = time.time()
+                    debug("post_message queued (wait-wake) sid=%r text_len=%d",
+                          self.session_id, len(text))
+                    return True
                 debug("post_message rejected (in flight) sid=%r", self.session_id)
                 return False
             self.last_activity = time.time()
@@ -394,11 +415,25 @@ class GatewaySession:
             # Refresh on-disk session files so the browser reflects the new turn.
             _write_session_files(self.session_id, self.agent.record)
             # Clear the worker so the next post_message isn't rejected as
-            # "in flight" after the turn has ended.
+            # "in flight" after the turn has ended. Drain a user message that was
+            # queued while the agent was blocked in the `wait` tool — the wait
+            # was interrupted (wake "user") and this is the follow-up turn the
+            # user intended. Pop under the lock; post_message starts a fresh
+            # worker (and re-enters _worker_lock, which is fine — we release it
+            # first). If we start a turn here, _on_background_complete below
+            # sees it alive and returns, so the two never double-start.
             with self._worker_lock:
                 self._worker = None
+                pending = (self._pending_user_msgs.pop(0)
+                           if self._pending_user_msgs else None)
             debug("turn end sid=%r seq=%r record_len=%d",
                   self.session_id, getattr(self.agent, "_seq", 0), len(self.agent.record or []))
+            if pending:
+                try:
+                    self.post_message(pending)
+                except Exception:
+                    pass
+                return  # the fresh turn's finally will drain the rest + bg
             # Race backstop: a background task may have completed between the
             # last inject_background_notifications pass and this point. Re-check
             # and, if anything is pending, start a follow-up turn to deliver it.

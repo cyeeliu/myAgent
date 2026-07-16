@@ -46,6 +46,9 @@ from agent_core.adapter import (
     _to_openai_tools,
     chat_create,
 )
+from agent_core.waitlock import (
+    WaitLock,
+)
 from agent_core.session import (
     ChannelSink,
     CliPermission,
@@ -122,6 +125,8 @@ from agent_core.bus import (
     match_response,
     new_request_id,
     pending_requests,
+    register_lead_listener,
+    unregister_lead_listener,
 )
 from agent_core.hooks import (
     DENY_LIST,
@@ -277,6 +282,7 @@ from agent_core.tools import (
     run_start_team,
     run_ask_user,
     run_show_widget,
+    run_wait,
     run_todo_write,
     run_web_search,
     run_write,
@@ -374,6 +380,7 @@ __all__ = [
     'Task',
     'TerminalSink',
     'VALID_WT_NAME',
+    'WaitLock',
     'active_teammates',
     'agent_loop',
     'assemble_system_prompt',
@@ -464,6 +471,7 @@ __all__ = [
     'read_memory_file',
     'read_memory_index',
     'register_hook',
+    'register_lead_listener',
     'remove_worktree',
     'retry_delay',
     'run_bash',
@@ -496,6 +504,7 @@ __all__ = [
     'run_spawn_teammate',
     'run_start_team',
     'run_team_info',
+    'run_wait',
     'run_todo_write',
     'run_write',
     'safe_path',
@@ -522,6 +531,7 @@ __all__ = [
     'terminal_print',
     'tool_result_budget',
     'trigger_hooks',
+    'unregister_lead_listener',
     'update_context',
     'user_prompt_hook',
     'validate_cron',

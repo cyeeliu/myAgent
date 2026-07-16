@@ -212,6 +212,16 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
             state = pending_requests.get(request_id)
             if not state:
                 return f"Request {request_id} not found"
+            if state.sender == name:
+                # A leader approving its own plan submission is a role confusion:
+                # the lead (main loop) reviews the leader's plan, not the leader
+                # itself. Refuse so the approval doesn't route a response back to
+                # the leader (aliee → aliee) and the leader waits on the real
+                # approval from the lead.
+                return (f"Request {request_id} is YOUR OWN plan submission — "
+                        "the lead reviews it, not you. Only review_plan a "
+                        "member's submitted plan (the request_id the member's "
+                        "submit_plan returned).")
             state.status = "approved" if approve else "rejected"
             BUS.send(name, state.sender,
                      feedback or ("Approved" if approve else "Rejected"),
@@ -541,6 +551,11 @@ def start_team(team_name: str, task: str = "") -> str:
             parts.append(f"Task: {task}")
         parts.append(f"Report to your leader '{leader_name}' via send_message; "
                      f"submit plans via submit_plan.")
+        parts.append(
+            "send_message is asynchronous — it returns 'Sent' immediately, not a "
+            "reply. After sending a message or submit_plan to your leader, END YOUR "
+            "TURN; your idle_poll waits for the leader's reply and wakes you on the "
+            "next turn. Do not assume silence means the leader is offline.")
         if persona:
             parts.append(f"Persona: {persona}")
         if prompt_hint:
@@ -581,6 +596,25 @@ def start_team(team_name: str, task: str = "") -> str:
         "request_shutdown. When you have an overall plan, submit it via submit_plan "
         "for the lead to approve (验收). Report final results to the lead via "
         f"send_message(to=\"lead\", ...). Members: \n" + "\n".join(roster_lines))
+    leader_parts.append(
+        "CRITICAL — async messaging discipline:\n"
+        "- send_message is ASYNCHRONOUS: it returns 'Sent to <name>' immediately, "
+        "NOT the recipient's reply. The reply arrives in your inbox on a LATER turn.\n"
+        "- After send_message / request_plan / request_shutdown to a member, END "
+        "YOUR TURN (produce no further tool_use — a short text note is fine). Your "
+        "idle_poll will wait for their reply and wake you with an <inbox> message "
+        "on the next turn. THEN react to it.\n"
+        "- NEVER conclude 'no response', 'offline', or 'unreachable' from the "
+        "send_message tool_result alone — that only means it was delivered, not "
+        "that the member saw it. A member is unreachable only after you have ended "
+        "your turn and idle_poll timed out (60s) with no reply.\n"
+        "- Do NOT send a report to the lead about a member's status in the same "
+        "turn you first message that member — wait for the reply first.\n"
+        "- Task IDs: call create_task to mint an ID and use the returned ID; NEVER "
+        "invent IDs like 'DEBUG-001'. complete_task only accepts IDs from create_task.\n"
+        "- review_plan approves a MEMBER's submitted plan (pass the request_id the "
+        "member's submit_plan returned). Never review_plan your own plan — the lead "
+        "reviews yours.")
     if leader_persona:
         leader_parts.append(f"Persona: {leader_persona}")
     leader_prompt = "\n".join(leader_parts)
@@ -604,4 +638,21 @@ def start_team(team_name: str, task: str = "") -> str:
         "You drive the team via: send_to_leader(team_name, content), "
         "check_inbox, review_plan(request_id, approve, feedback). "
         "The leader coordinates members; you cannot message members directly.")
+    summary_lines.append(
+        "WAIT FOR THE TEAM TO FINISH — do NOT end your turn after the first report. "
+        "The leader sends multiple updates as it works (interim status, then a final "
+        "result). After approving the plan, loop:\n"
+        "  1. check_inbox — read whatever the leader has sent.\n"
+        "  2. If you have a FINAL result (a 'result' message or the leader reports "
+        "the task done and shuts down), you're finished — summarize for the user.\n"
+        "  3. Otherwise call wait(sources=[\"team\",\"background\"], timeout=600) to "
+        "block for the next update with NO LLM polling, then go to step 1.\n"
+        "Ending your turn after a non-final / interim report strands the leader's "
+        "later updates in your inbox undelivered.")
+    summary_lines.append(
+        "When you have nothing active to do but are waiting on the leader or a "
+        "background task, call wait(sources=[\"team\",\"background\"], timeout=...) "
+        "instead of bash sleep — it blocks with no LLM polling and resumes the "
+        "instant a team message or background result arrives, then call check_inbox "
+        "or task_output to read it.")
     return "\n".join(summary_lines)

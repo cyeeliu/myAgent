@@ -165,6 +165,20 @@ def _notify(session, bg_id, command, code, output):
     has already ended, so the agent reacts to the result in a fresh turn."""
     if session is None:
         return
+    # Wake a waiting agent FIRST, before any session.lock-acquiring call below.
+    # The agent holds session.lock for the whole turn (gateway _run_turn wraps
+    # agent_loop in `with session.lock`); session.emit() takes that lock briefly.
+    # If the agent is blocked in the `wait` tool, calling wake first ensures the
+    # monitor thread unblocks it before emit() would block on the held lock —
+    # otherwise emit() blocks, wake never runs, and the wait deadlocks. The
+    # background_results entry is already set before _notify is called, so the
+    # loop's inject_background_notifications will drain it once the wait returns.
+    wl = getattr(session, "wait_lock", None)
+    if wl is not None:
+        try:
+            wl.wake("background", bg_id)
+        except Exception:
+            pass
     try:
         first_line = ""
         for line in output.splitlines():

@@ -3,6 +3,8 @@ from dataclasses import dataclass, asdict, field
 import queue
 import threading
 
+from agent_core.waitlock import WaitLock
+
 
 EVENT_KINDS = ("token", "text", "tool_start", "tool_result",
                "error", "permission_request", "ask_user", "widget", "compacted",
@@ -111,6 +113,10 @@ class Session:
     on_background_complete: object = None  # gateway hook: re-trigger the loop when
                                            # a background task finishes after the
                                            # turn ended. See GatewaySession.
+    wait_lock: WaitLock = field(default_factory=WaitLock)  # signal-driven wait for
+                                                           # the `wait` tool; woken
+                                                           # by user/team/background
+                                                           # signals. See waitlock.py.
     _seq: int = 0
 
     def append_both(self, msg: dict) -> None:

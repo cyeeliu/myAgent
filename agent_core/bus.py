@@ -9,17 +9,48 @@ from agent_core.env import session_dir, terminal_print
 def _mailbox_dir():
     return session_dir() / ".mailboxes"
 
+# Lead wait-lock listeners, keyed by str(session_dir()). When a teammate/leader
+# writes to the "lead" mailbox, the matching listener (registered by the main
+# loop's `wait` tool) pokes the session's WaitLock so a blocked agent resumes
+# immediately instead of waiting for the timeout. The teammate thread runs with
+# the lead's session_dir() restored (spawn_teammate_thread captures/restores it),
+# so the key computed in MessageBus.send matches the one the lead registered.
+_lead_listeners: dict[str, object] = {}
+
+
+def register_lead_listener(session_path, cb):
+    """Register a callback(content, msg_type) poked when a message is sent to
+    the "lead" mailbox under session_path (= session_dir())."""
+    _lead_listeners[str(session_path)] = cb
+
+
+def unregister_lead_listener(session_path):
+    _lead_listeners.pop(str(session_path), None)
+
+
 class MessageBus:
     def send(self, from_agent: str, to_agent: str, content: str,
              msg_type: str = "message", metadata: dict = None):
         msg = {"from": from_agent, "to": to_agent,
                "content": content, "type": msg_type,
                "ts": time.time(), "metadata": metadata or {}}
-        inbox = _mailbox_dir() / f"{to_agent}.jsonl"
+        mdir = _mailbox_dir()
+        inbox = mdir / f"{to_agent}.jsonl"
         with open(inbox, "a") as f:
             f.write(json.dumps(msg) + "\n")
         terminal_print(f"  \033[33m[bus] {from_agent} → {to_agent}: "
                        f"({msg_type}) {content[:50]}\033[0m")
+        # Poke a waiting lead so its `wait` tool resumes instantly. The mailbox
+        # line is already written, so even if there's no listener the next
+        # check_inbox will find it — this is just a latency optimization + a
+        # way to unblock a wait that has no timeout-pressure.
+        if to_agent == "lead":
+            cb = _lead_listeners.get(str(mdir.parent))
+            if cb is not None:
+                try:
+                    cb(content, msg_type)
+                except Exception:
+                    pass
 
     def read_inbox(self, agent: str) -> list[dict]:
         inbox = _mailbox_dir() / f"{agent}.jsonl"
@@ -29,6 +60,17 @@ class MessageBus:
                 if line.strip()]
         inbox.unlink()
         return msgs
+
+    def has_inbox(self, agent: str) -> bool:
+        """Peek whether the agent's mailbox has any undrained messages, WITHOUT
+        draining it. Used by the `wait` tool to close the check-then-wait race
+        (a message that arrived between check_inbox and wait would otherwise
+        only be noticed on the next wake/timeout)."""
+        inbox = _mailbox_dir() / f"{agent}.jsonl"
+        try:
+            return inbox.exists() and inbox.stat().st_size > 0
+        except Exception:
+            return False
 
 BUS = MessageBus()
 
