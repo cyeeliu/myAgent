@@ -15,34 +15,9 @@ SUB_SYSTEM = (
     "Do not spawn more agents."
 )
 
-SUB_TOOLS = [
-    {"name": "bash", "description": "Run a shell command.",
-     "input_schema": {"type": "object",
-                      "properties": {"command": {"type": "string"}},
-                      "required": ["command"]}},
-    {"name": "read_file", "description": "Read file contents.",
-     "input_schema": {"type": "object",
-                      "properties": {"path": {"type": "string"},
-                                     "limit": {"type": "integer"},
-                                     "offset": {"type": "integer"}},
-                      "required": ["path"]}},
-    {"name": "write_file", "description": "Write content to a file.",
-     "input_schema": {"type": "object",
-                      "properties": {"path": {"type": "string"},
-                                     "content": {"type": "string"}},
-                      "required": ["path", "content"]}},
-    {"name": "edit_file", "description": "Replace exact text in a file once.",
-     "input_schema": {"type": "object",
-                      "properties": {"path": {"type": "string"},
-                                     "old_text": {"type": "string"},
-                                     "new_text": {"type": "string"}},
-                      "required": ["path", "old_text", "new_text"]}},
-    {"name": "glob", "description": "Find files matching a glob pattern.",
-     "input_schema": {"type": "object",
-                      "properties": {"pattern": {"type": "string"}},
-                      "required": ["pattern"]}},
-]
-
+# Default tool set for an ad-hoc subagent (no agent def). The schemas/handlers
+# are resolved from BUILTIN_TOOLS/BUILTIN_HANDLERS at runtime via _resolve_toolset
+# (see tools.SUBAGENT_TOOL_NAMES) — subagent.py no longer re-declares schemas.
 SUB_HANDLERS = None  # kept for backward-compat (re-exported); unused by spawn_subagent
 
 
@@ -66,10 +41,11 @@ def _resolve_toolset(tool_names: list[str]):
 def spawn_subagent(description: str, agent: str | None = None) -> str:
     """Launch a focused subagent and return its final text summary.
 
-    agent=None → ad-hoc subagent with SUB_SYSTEM/SUB_TOOLS and the global model.
+    agent=None → ad-hoc subagent with SUB_SYSTEM and the default tool set
+    (tools.SUBAGENT_TOOL_NAMES) and the global model.
     agent=<name> → load the defined agent (.agents/<name>.json) and use its
     prompt/tools/model (model=null inherits the global MODEL)."""
-    from agent_core.tools import call_tool_handler
+    from agent_core.tools import call_tool_handler, SUBAGENT_TOOL_NAMES
 
     if agent is not None:
         from agent_core.agents import get_agent, scan_agents
@@ -77,11 +53,11 @@ def spawn_subagent(description: str, agent: str | None = None) -> str:
         if defn is None:
             return f"Agent not found: {agent}. Available:\n{scan_agents()}"
         system = defn.get("prompt") or SUB_SYSTEM
-        tool_names = defn.get("tools") or [t["name"] for t in SUB_TOOLS]
+        tool_names = defn.get("tools") or SUBAGENT_TOOL_NAMES
         model = defn.get("model") or model_config.model()
     else:
         system = SUB_SYSTEM
-        tool_names = [t["name"] for t in SUB_TOOLS]
+        tool_names = SUBAGENT_TOOL_NAMES
         model = model_config.model()
 
     try:

@@ -212,35 +212,114 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
     if m == ReqMethod.CONFIG_SET:
         updates = {k: v for k, v in params.items() if k != "session_id"}
         resp = _config_set(updates)
+        # Flat agent/team keys (legacy save path): reconstruct and persist.
+        if any(k.startswith("agent_name_") or k.startswith("agent_") and k.endswith("_name")
+               or k.startswith("team_") or k.startswith("team_name_") for k in updates):
+            try:
+                agents, team = code.agents_flat_to_structured(updates)
+                if agents or team:
+                    code.write_agents_config(agents, team)
+                    resp.setdefault("updated", [])
+                    if agents:
+                        resp["updated"].append("agents")
+                    if team:
+                        resp["updated"].append("team")
+            except Exception:  # noqa: BLE001
+                pass
         return AgentResponse(req.request_id, payload=resp)
 
     if m == ReqMethod.MODELS_LIST:
-        cfg = model_config.get_config_masked()
+        models = model_config.get_models()
+        active = model_config.get_config()["model_id"]
         return AgentResponse(req.request_id, payload={
-            "models": [{
-                "model_name": cfg["model_id"],
-                "api_base": cfg.get("base_url") or "",
-                "api_key": cfg.get("api_key_masked") or "",
-                "model_provider": "openai-compatible",
-                "is_default": True,
-                "alias": None,
-            }],
-            "active_model": cfg["model_id"],
+            "models": models,
+            "active_model": active,
         })
 
     if m == ReqMethod.MODELS_REPLACE_ALL:
-        # Single-model config: accept the first entry's fields.
+        # Multi-model list: persist the full list; the primary entry drives the
+        # active model (top-level model_id/base_url/api_key).
         models = params.get("models") or []
-        if isinstance(models, list) and models:
-            entry = models[0]
-            if isinstance(entry, dict):
-                model_config.write_config(
-                    entry.get("model_name") or entry.get("model_id", ""),
-                    entry.get("api_base"),
-                    entry.get("api_key"),
-                    entry.get("fallback_model"),
-                )
-        return AgentResponse(req.request_id, payload={"ok": True})
+        if isinstance(models, list):
+            model_config.write_models(models)
+        return AgentResponse(req.request_id, payload={"ok": True, "applied_without_restart": True})
+
+    if m == ReqMethod.CONFIG_SAVE_ALL:
+        # Unified save: {config?, models?, agents?, team?}. myAgent applies
+        # config in-place WITHOUT restarting the process, so we always return
+        # applied_without_restart=True — the frontend's restart modal then
+        # flips to success immediately instead of hanging on "waiting for
+        # backend to restart and reconnect" (the WS never drops because
+        # nothing restarted).
+        updated: list[str] = []
+        models = params.get("models")
+        if isinstance(models, list):
+            model_config.write_models(models)
+            updated.append("models")
+        cfg_updates = params.get("config")
+        if isinstance(cfg_updates, dict) and cfg_updates:
+            r = _config_set({k: v for k, v in cfg_updates.items() if k != "session_id"})
+            if r.get("updated"):
+                updated.extend(r["updated"])
+        # agents/team (structured): persist to agents_config.json and sync
+        # subagent defs so they appear in the catalog and are usable via task.
+        agents_payload = params.get("agents")
+        team_payload = params.get("team")
+        if agents_payload is not None or team_payload is not None:
+            try:
+                code.write_agents_config(agents_payload, team_payload)
+                updated.append("agents")
+            except Exception:  # noqa: BLE001
+                pass
+        return AgentResponse(req.request_id, payload={
+            "updated": updated,
+            "applied_without_restart": True,
+        })
+
+    if m == ReqMethod.CONFIG_VALIDATE_MODEL:
+        # Connectivity + model-id probe: build a one-off OpenAI client with the
+        # supplied fields and call GET /models (client.models.list). This
+        # verifies the host is reachable, the api_key authenticates, AND the
+        # supplied model_id is one the endpoint actually serves — all without
+        # consuming any tokens (no chat completion). Returns ok=True only if
+        # model_id is found in the listed ids; any error (bad key, wrong base,
+        # unreachable host, unknown model) → ok=False with the underlying
+        # message so the UI's Test button reflects reality instead of always
+        # succeeding.
+        # The model card masks the saved api_key as "***"/"sk-***xxxx"; when the
+        # caller sends that placeholder (or leaves a field blank), fall back to
+        # the currently persisted value so Test works on the unedited config.
+        saved = model_config.get_config()
+        api_base = (params.get("api_base") or "").strip() or saved.get("base_url") or ""
+        raw_key = (params.get("api_key") or "").strip()
+        if not raw_key or "***" in raw_key:
+            api_key = saved.get("api_key") or ""
+        else:
+            api_key = raw_key
+        model_id = (params.get("model") or params.get("model_name") or "").strip() \
+            or saved.get("model_id") or ""
+        if not api_base or not api_key or not model_id:
+            return AgentResponse(req.request_id, ok=False,
+                                 error="api_base, api_key and model are required")
+        try:
+            from openai import OpenAI
+            client = OpenAI(base_url=api_base, api_key=api_key, timeout=30)
+            listed = [m_obj.id for m_obj in client.models.list().data]
+        except Exception as exc:  # noqa: BLE001
+            return AgentResponse(req.request_id, ok=False,
+                                 error=f"{type(exc).__name__}: {exc}")
+        if not listed:
+            return AgentResponse(req.request_id, ok=False,
+                                 error="endpoint returned no models; cannot verify model id")
+        if model_id not in listed:
+            # Surface a few candidates so the user can correct the name; cap to
+            # avoid dumping hundreds of ids into the UI toast.
+            sample = ", ".join(listed[:12])
+            more = f" …(+{len(listed) - 12} more)" if len(listed) > 12 else ""
+            return AgentResponse(req.request_id, ok=False,
+                                 error=f"model '{model_id}' not in endpoint's model list. "
+                                       f"Available: {sample}{more}")
+        return AgentResponse(req.request_id, payload={"ok": True, "model_id": model_id})
 
     # ── skills ──
     if m == ReqMethod.SKILLS_LIST:
@@ -622,13 +701,20 @@ def _session_status(gs) -> dict:
 
 def _config_get() -> dict:
     cfg = model_config.get_config_masked()
-    return {
+    out = {
         "model_id": cfg["model_id"],
         "base_url": cfg.get("base_url"),
         "api_key_masked": cfg.get("api_key_masked"),
         "fallback_model": cfg.get("fallback_model"),
         "a2ui_enabled": False,
     }
+    # Merge the Agent-tab flat keys (agent_name_${i}, team_${i}_*, …) so the
+    # ConfigPanel Agent tab populates from the persisted agents_config.json.
+    try:
+        out.update(code.agents_flat_config())
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def _config_set(updates: dict) -> dict:

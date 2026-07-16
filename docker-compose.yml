@@ -56,6 +56,12 @@ services:
       - AUTO_COMPACT_WINDOW=${AUTO_COMPACT_WINDOW:-128000}
     volumes:
       - ${HOME}/.myAgent/workspace:/app/workspace
+      # Agent/team/model config (.agents/*.json — agent defs, agents_config.json,
+      # model.json). Code writes to /app/.agents (= REPO_ROOT/.agents); this
+      # bind-mount backs it with ~/.myAgent/agents on the host so config survives
+      # container recreates. Sibling to the workspace mount; not under /app/workspace
+      # so it stays out of the AgentPanel file tree.
+      - ${HOME}/.myAgent/agents:/app/.agents
       # On-disk session artifacts (transcript.md / history.json) browsed by the
       # SessionsPanel via /file-api. Persisted across container recreates.
       - sessiondata:/app/agent/sessions

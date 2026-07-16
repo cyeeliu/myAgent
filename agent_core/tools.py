@@ -16,7 +16,7 @@ from agent_core.env import workdir
 from agent_core.skills import load_skill
 from agent_core.subagent import spawn_subagent
 from agent_core.tasks import claim_task, complete_task, create_task, get_task_json, list_tasks, set_todos
-from agent_core.teammates import run_request_plan, run_request_shutdown, run_review_plan, spawn_teammate_thread
+from agent_core.teammates import run_request_plan, run_request_shutdown, run_review_plan, spawn_teammate_thread, start_team, run_team_info
 from agent_core.worktrees import create_worktree, keep_worktree, remove_worktree
 
 
@@ -608,9 +608,24 @@ def run_complete_task(task_id: str) -> str:
 def run_spawn_teammate(name: str, role: str, prompt: str) -> str:
     return spawn_teammate_thread(name, role, prompt)
 
+def run_start_team(team_name: str, task: str = "") -> str:
+    return start_team(team_name, task)
+
 def run_send_message(to: str, content: str) -> str:
     BUS.send("lead", to, content)
     return f"Sent to {to}"
+
+def run_send_to_leader(team_name: str, content: str) -> str:
+    """Main-loop tool: send a message to a started team's leader. The leader
+    name is registered by start_team in teammates._team_leaders. This is the
+    only way for the main loop to talk into a team — it cannot message members
+    directly (3-tier: main loop → leader → members)."""
+    from agent_core.teammates import _team_leaders
+    leader = _team_leaders.get(team_name)
+    if not leader:
+        return f"No active leader for team {team_name!r}"
+    BUS.send("lead", leader, content)
+    return f"Sent to leader {leader} of team {team_name!r}"
 
 def run_check_inbox() -> str:
     msgs = consume_lead_inbox(route_protocol=True)
@@ -810,33 +825,39 @@ BUILTIN_TOOLS = [
      "input_schema": {"type": "object",
                       "properties": {"job_id": {"type": "string"}},
                       "required": ["job_id"]}},
-    {"name": "spawn_teammate", "description": "Spawn an autonomous teammate.",
+    {"name": "start_team", "description":
+     "Launch a saved team by name (from the Agent config tab). Spawns a dedicated "
+     "team LEADER (from team.leader.agent_key) plus the predefined members, each "
+     "in its own git worktree under .worktrees/. The leader coordinates members "
+     "and reports back to you; you do NOT message members directly. Drive the "
+     "team via send_to_leader(team_name, content), check_inbox, and review_plan. "
+     "Returns the roster + the leader name.",
      "input_schema": {"type": "object",
-                      "properties": {"name": {"type": "string"},
-                                     "role": {"type": "string"},
-                                     "prompt": {"type": "string"}},
-                      "required": ["name", "role", "prompt"]}},
-    {"name": "send_message", "description": "Send message to a teammate.",
-     "input_schema": {"type": "object",
-                      "properties": {"to": {"type": "string"},
-                                     "content": {"type": "string"}},
-                      "required": ["to", "content"]}},
-    {"name": "check_inbox",
-     "description": "Check inbox for messages and protocol responses.",
-     "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "request_shutdown",
-     "description": "Request a teammate to shut down.",
-     "input_schema": {"type": "object",
-                      "properties": {"teammate": {"type": "string"}},
-                      "required": ["teammate"]}},
-    {"name": "request_plan",
-     "description": "Ask a teammate to submit a plan.",
-     "input_schema": {"type": "object",
-                      "properties": {"teammate": {"type": "string"},
+                      "properties": {"team_name": {"type": "string"},
                                      "task": {"type": "string"}},
-                      "required": ["teammate", "task"]}},
+                      "required": ["team_name"]}},
+    {"name": "team_info", "description":
+     "Get detailed info about a team: saved config (leader/members, lifecycle, "
+     "spawn mode) plus live runtime state (which leader is registered, which "
+     "teammates are currently active). Works on started AND unstarted teams.",
+     "input_schema": {"type": "object",
+                      "properties": {"team_name": {"type": "string"}},
+                      "required": ["team_name"]}},
+    {"name": "send_to_leader",
+     "description": "Send a message to a started team's leader (the only way for "
+                    "the main loop to talk into a team; members are unreachable "
+                    "from the main loop).",
+     "input_schema": {"type": "object",
+                      "properties": {"team_name": {"type": "string"},
+                                     "content": {"type": "string"}},
+                      "required": ["team_name", "content"]}},
+    {"name": "check_inbox",
+     "description": "Check inbox for messages and protocol responses from team "
+                    "leaders (results, submitted plans).",
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "review_plan",
-     "description": "Approve or reject a submitted plan.",
+     "description": "Approve or reject a submitted plan (验收 — used by the main "
+                    "loop to accept a team leader's plan).",
      "input_schema": {"type": "object",
                       "properties": {"request_id": {"type": "string"},
                                      "approve": {"type": "boolean"},
@@ -890,12 +911,87 @@ BUILTIN_HANDLERS = {
     "schedule_cron": run_schedule_cron,
     "list_crons": run_list_crons,
     "cancel_cron": run_cancel_cron,
-    "spawn_teammate": run_spawn_teammate,
-    "send_message": run_send_message, "check_inbox": run_check_inbox,
-    "request_shutdown": run_request_shutdown,
-    "request_plan": run_request_plan, "review_plan": run_review_plan,
+    "start_team": run_start_team,
+    "team_info": run_team_info,
+    "send_to_leader": run_send_to_leader,
+    "check_inbox": run_check_inbox,
+    "review_plan": run_review_plan,
     "create_worktree": run_create_worktree,
     "remove_worktree": run_remove_worktree,
     "keep_worktree": run_keep_worktree,
     "connect_mcp": run_connect_mcp,
 }
+
+# ── Tool subsets for subagents / teammates ──
+# The schemas live in BUILTIN_TOOLS (single source of truth); these select by
+# name so subagent.py / teammates.py don't re-declare schemas inline.
+FILE_TOOL_NAMES = ["bash", "read_file", "write_file", "edit_file", "glob", "list_dir"]
+SUBAGENT_TOOL_NAMES = ["bash", "read_file", "write_file", "edit_file", "glob"]
+
+# 3-tier team tool partition:
+#   members  = file tools + send_message + submit_plan + task graph
+#   leader   = file tools + send_message + submit_plan + request_plan +
+#              review_plan + request_shutdown + task graph
+# The main loop only gets start_team / send_to_leader / check_inbox / review_plan
+# (advertised in BUILTIN_TOOLS); it cannot message members directly.
+MEMBER_TOOL_NAMES = ["send_message", "submit_plan",
+                     "list_tasks", "claim_task", "complete_task"]
+LEADER_TOOL_NAMES = ["send_message", "submit_plan",
+                     "request_plan", "review_plan", "request_shutdown",
+                     "list_tasks", "claim_task", "complete_task"]
+# Backward-compat alias (old teammates.py imports).
+TEAMMATE_TOOL_NAMES = MEMBER_TOOL_NAMES
+
+# submit_plan / request_plan / request_shutdown are teammate-only and stateful:
+# they open protocol gates keyed to the spawning teammate, so they're dispatched
+# inside the teammate loop (not via BUILTIN_HANDLERS). Kept out of BUILTIN_TOOLS
+# so the main loop's tool pool doesn't advertise them. review_plan IS in
+# BUILTIN_TOOLS (the main loop uses it for 验收); the leader reuses the same
+# schema via teammate_tool_schemas.
+SUBMIT_PLAN_TOOL = {
+    "name": "submit_plan",
+    "description": "Submit a plan for approval to your overseer (leader or lead).",
+    "input_schema": {"type": "object",
+                     "properties": {"plan": {"type": "string"}},
+                     "required": ["plan"]},
+}
+SEND_MESSAGE_TOOL = {
+    "name": "send_message",
+    "description": "Send a message to a peer (a teammate, your leader, or \"lead\").",
+    "input_schema": {"type": "object",
+                     "properties": {"to": {"type": "string"},
+                                    "content": {"type": "string"}},
+                     "required": ["to", "content"]},
+}
+REQUEST_PLAN_TOOL = {
+    "name": "request_plan",
+    "description": "Ask a teammate to submit a plan for a task.",
+    "input_schema": {"type": "object",
+                     "properties": {"teammate": {"type": "string"},
+                                    "task": {"type": "string"}},
+                     "required": ["teammate", "task"]},
+}
+REQUEST_SHUTDOWN_TOOL = {
+    "name": "request_shutdown",
+    "description": "Request a teammate to shut down.",
+    "input_schema": {"type": "object",
+                     "properties": {"teammate": {"type": "string"}},
+                     "required": ["teammate"]},
+}
+# Teammate-only schema literals not present in BUILTIN_TOOLS.
+_EXTRA_TEAM_TOOL_SCHEMAS = [SUBMIT_PLAN_TOOL, SEND_MESSAGE_TOOL,
+                            REQUEST_PLAN_TOOL, REQUEST_SHUTDOWN_TOOL]
+
+
+def tool_schemas(names: list[str]) -> list[dict]:
+    """Select builtin tool schemas by name (single source of truth)."""
+    by_name = {t["name"]: t for t in BUILTIN_TOOLS}
+    return [by_name[n] for n in names if n in by_name]
+
+
+def teammate_tool_schemas(names: list[str]) -> list[dict]:
+    """Like tool_schemas, but also resolves teammate-only literals
+    (submit_plan, request_plan, request_shutdown) that are not in BUILTIN_TOOLS.
+    Used by the teammate loop to build a leader/member tool pool."""
+    by_name = {t["name"]: t for t in BUILTIN_TOOLS + _EXTRA_TEAM_TOOL_SCHEMAS}
+    return [by_name[n] for n in names if n in by_name]

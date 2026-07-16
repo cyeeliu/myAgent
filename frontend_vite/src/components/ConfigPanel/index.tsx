@@ -1010,9 +1010,18 @@ function MultiModelSection({
       });
       setValidateResults((prev) => ({ ...prev, [validationKey]: "ok" }));
       setValidateToast({ show: true, success: true, message: t("config.validateModel.success") });
-    } catch {
+    } catch (e) {
       setValidateResults((prev) => ({ ...prev, [validationKey]: "err" }));
-      setValidateToast({ show: true, success: false, message: t("config.validateModel.notWorking") });
+      // The gateway rejects with a WebError whose .message is the server's error
+      // string — for an unknown model that includes the endpoint's available
+      // model list. Surface it so the user can correct the name instead of the
+      // generic "not working" toast.
+      const detail = e instanceof Error && e.message ? e.message : "";
+      setValidateToast({
+        show: true,
+        success: false,
+        message: detail || t("config.validateModel.notWorking"),
+      });
     } finally {
       setValidatingModel(null);
       setTimeout(() => setValidateToast((prev) => ({ ...prev, show: false })), 3000);
@@ -1207,19 +1216,19 @@ function MultiModelSection({
         )}
         {validateToast.show && (
           <div
-            className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-xl shadow-lg flex items-center gap-3 animate-fade-in ${validateToast.success ? "bg-ok-subtle border border-ok text-ok" : "bg-danger-subtle border border-danger text-danger"
+            className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-xl shadow-lg flex items-start gap-3 animate-fade-in max-w-[92vw] ${validateToast.success ? "bg-ok-subtle border border-ok text-ok" : "bg-danger-subtle border border-danger text-danger"
               }`}
           >
             {validateToast.success ? (
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <svg className="w-5 h-5 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
               </svg>
             ) : (
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <svg className="w-5 h-5 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
               </svg>
             )}
-            <span className="font-medium">{validateToast.message}</span>
+            <span className="font-medium whitespace-pre-wrap break-words leading-relaxed">{validateToast.message}</span>
           </div>
         )}
         {models.map((model, idx) => {
@@ -2926,10 +2935,26 @@ export function ConfigPanel({
     return false;
   }, [draftAgents, draftTeams, initialAgents, initialTeams]);
   const hasChanges = hasConfigChanges || hasModelChanges || hasAgentsTeamsChanges;
-  const missingRequiredModelFields = useMemo(
-    () => REQUIRED_MODEL_FIELDS.filter((key) => !(draftValues[key] ?? "").trim()),
-    [draftValues],
-  );
+  // Required model fields are validated against the primary default model in the
+  // multi-model list (draftModels[0]), NOT the flat config (draftValues). The
+  // backend config.get returns model fields under its own keys (model_id /
+  // base_url / api_key_masked), so the legacy draftValues lookup would always
+  // report them missing and permanently disable Save. The model list is the
+  // source of truth for model configuration.
+  const missingRequiredModelFields = useMemo(() => {
+    const primary = draftModels[0];
+    if (!primary) return REQUIRED_MODEL_FIELDS.slice();
+    const fieldOf = (key: string): string => {
+      switch (key) {
+        case 'model': return primary.model_name ?? '';
+        case 'api_base': return primary.api_base ?? '';
+        case 'api_key': return primary.api_key ?? '';
+        case 'model_provider': return primary.model_provider ?? '';
+        default: return '';
+      }
+    };
+    return REQUIRED_MODEL_FIELDS.filter((key) => !(fieldOf(key)).trim());
+  }, [draftModels]);
   const hasMissingRequiredModelFields = missingRequiredModelFields.length > 0;
   const hasDuplicateAgentNames = useMemo(
     () => {

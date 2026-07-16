@@ -78,6 +78,12 @@ from agent_core.agents import (
     list_agents,
     save_agent,
     scan_agents,
+    get_agents_config,
+    write_agents_config,
+    agents_flat_config,
+    agents_flat_to_structured,
+    get_team,
+    list_team_names,
 )
 from agent_core.tasks import (
     Task,
@@ -170,7 +176,6 @@ from agent_core.background import (
 from agent_core.subagent import (
     SUB_HANDLERS,
     SUB_SYSTEM,
-    SUB_TOOLS,
     spawn_subagent,
 )
 from agent_core.teammates import (
@@ -182,8 +187,10 @@ from agent_core.teammates import (
     run_request_plan,
     run_request_shutdown,
     run_review_plan,
+    run_team_info,
     scan_unclaimed_tasks,
     spawn_teammate_thread,
+    start_team,
 )
 from agent_core.mcp import (
     MCPClient,
@@ -265,14 +272,31 @@ from agent_core.tools import (
     run_read,
     run_remove_worktree,
     run_send_message,
+    run_send_to_leader,
     run_spawn_teammate,
+    run_start_team,
     run_ask_user,
     run_show_widget,
     run_todo_write,
     run_web_search,
     run_write,
     safe_path,
+    FILE_TOOL_NAMES,
+    SUBAGENT_TOOL_NAMES,
+    MEMBER_TOOL_NAMES,
+    LEADER_TOOL_NAMES,
+    TEAMMATE_TOOL_NAMES,
+    SUBMIT_PLAN_TOOL,
+    REQUEST_PLAN_TOOL,
+    REQUEST_SHUTDOWN_TOOL,
+    tool_schemas,
+    teammate_tool_schemas,
 )
+
+# Backward-compat: SUB_TOOLS used to be a schema literal in subagent.py; it now
+# derives from the centralized BUILTIN_TOOLS via tool_schemas() so the ad-hoc
+# subagent default set has a single source of truth.
+SUB_TOOLS = tool_schemas(SUBAGENT_TOOL_NAMES)
 from agent_core.context import (
     build_user_content,
     inject_background_notifications,
@@ -336,6 +360,16 @@ __all__ = [
     'SUB_HANDLERS',
     'SUB_SYSTEM',
     'SUB_TOOLS',
+    'SUBMIT_PLAN_TOOL',
+    'REQUEST_PLAN_TOOL',
+    'REQUEST_SHUTDOWN_TOOL',
+    'FILE_TOOL_NAMES',
+    'SUBAGENT_TOOL_NAMES',
+    'MEMBER_TOOL_NAMES',
+    'LEADER_TOOL_NAMES',
+    'TEAMMATE_TOOL_NAMES',
+    'tool_schemas',
+    'teammate_tool_schemas',
     'Session',
     'Task',
     'TerminalSink',
@@ -406,6 +440,12 @@ __all__ = [
     'save_agent',
     'delete_agent',
     'scan_agents',
+    'get_agents_config',
+    'write_agents_config',
+    'agents_flat_config',
+    'agents_flat_to_structured',
+    'get_team',
+    'list_team_names',
     'load_task',
     'log_event',
     'log_hook',
@@ -452,7 +492,10 @@ __all__ = [
     'run_review_plan',
     'run_schedule_cron',
     'run_send_message',
+    'run_send_to_leader',
     'run_spawn_teammate',
+    'run_start_team',
+    'run_team_info',
     'run_todo_write',
     'run_write',
     'safe_path',
@@ -472,6 +515,7 @@ __all__ = [
     'snip_compact',
     'spawn_subagent',
     'spawn_teammate_thread',
+    'start_team',
     'start_background_task',
     'stop_hook',
     'summarize_history',

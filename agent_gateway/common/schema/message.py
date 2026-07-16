@@ -38,6 +38,8 @@ class ReqMethod(str, Enum):
     # ── config / models ──
     CONFIG_GET = "config.get"
     CONFIG_SET = "config.set"
+    CONFIG_SAVE_ALL = "config.save_all"  # unified save: {config?, models?, agents?, team?}
+    CONFIG_VALIDATE_MODEL = "config.validate_model"  # probe api_base/api_key/model with a minimal request
     MODELS_LIST = "models.list"
     MODELS_REPLACE_ALL = "models.replace_all"
 

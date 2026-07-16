@@ -224,7 +224,7 @@ class WebChannel(BaseChannel):
             env = decode_envelope(obj, channel_id="web")
             if env is None:
                 # Methods the frontend calls that myAgent has no backend for
-                # (config.save_all, config.validate_model, media.persist,
+                # (media.persist,
                 # permissions.tools.get, cron.*, updater.*, extensions.*,
                 # harness.*, channel.*.get_conf, …). Return a no-op success so
                 # the frontend's kept panels don't throw; dropped panels never
