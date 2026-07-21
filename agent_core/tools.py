@@ -353,19 +353,13 @@ def run_ask_user(question: str, options: list = None, header: str = "",
         # Gateway path: register the future FIRST (so a fast client answer can't
         # land before the future exists), then emit the event, then block.
         try:
-            fut = resolver(request_id)
-            s.emit("ask_user", {
-                "request_id": request_id,
-                "questions": [{
-                    "question": question,
-                    "header": header or "Question",
-                    "detail": detail,
-                    "options": [{"label": o} for o in options],
-                    "multi_select": bool(multi_select),
-                }],
-                "source": "ask_user_interrupt",
-            })
-            result = fut.result(timeout=timeout)
+            result = _ask_user_via_gateway(s, request_id, [{
+                "question": question,
+                "header": header or "Question",
+                "detail": detail,
+                "options": [{"label": o} for o in options],
+                "multi_select": bool(multi_select),
+            }], timeout=timeout)
         except Exception as e:
             return f"(ask_user failed: {e})"
         return _format_ask_answer(result)
@@ -395,6 +389,77 @@ def run_ask_user(question: str, options: list = None, header: str = "",
                 picked.append(p)  # custom input
         return ", ".join(picked)
     return raw
+
+
+def _ask_user_via_gateway(s, request_id: str, questions: list,
+                          source: str = "ask_user_interrupt",
+                          timeout: float = 300.0):
+    """Shared gateway plumbing for run_ask_user / run_exit_plan_mode: register
+    the answer future FIRST (so a fast client answer can't race registration),
+    emit the `ask_user` event (wire.py maps it to chat.ask_user_question and the
+    frontend renders UserQuestionModal), then block on the future. Returns the
+    raw future result — callers normalize via _format_ask_answer."""
+    resolver = getattr(s, "ask_resolver", None)
+    fut = resolver(request_id)
+    s.emit("ask_user", {
+        "request_id": request_id,
+        "questions": questions,
+        "source": source,
+    })
+    return fut.result(timeout=timeout)
+
+
+def run_exit_plan_mode(plan: str = "") -> str:
+    """Plan-mode approval gate (cf. Claude Code ExitPlanMode). Presents the
+    completed plan to the user for approval. On approval, pops `plan_mode` from
+    the session context so the next turn's assemble_tool_pool restores the full
+    tool set and the agent can execute. On rejection, stays in plan mode so the
+    agent revises and resubmits. Reuses the ask_user event pipe (same event
+    kind, same ask_resolver, same chat.send{source:ask_user_interrupt} answer
+    path) so wire.py and the frontend UserQuestionModal need no changes."""
+    import uuid
+    try:
+        from agent_core.mcp import get_current_session
+        s = get_current_session()
+    except Exception:
+        s = None
+    # Persist the plan to the session dir so it survives reconnect mid-approval
+    # and leaves an audit trail. session_dir() is workspace/.sessions/<sid>/ in
+    # the gateway (a hidden dot-dir, won't pollute the AgentPanel file browser).
+    try:
+        from agent_core.env import session_dir
+        (session_dir() / "plan.md").write_text(f"# Plan\n\n{plan}\n",
+                                               encoding="utf-8")
+    except Exception:
+        pass
+    request_id = uuid.uuid4().hex[:12]
+    question = plan or "(empty plan)"
+    questions = [{
+        "question": question,
+        "header": "方案审批",
+        "options": [{"label": "批准并执行", "description": "退出规划模式，按方案执行"},
+                    {"label": "拒绝", "description": "留在规划模式，继续修改方案"}],
+        "multi_select": False,
+    }]
+    resolver = getattr(s, "ask_resolver", None) if s is not None else None
+    if resolver is not None:
+        try:
+            result = _ask_user_via_gateway(s, request_id, questions,
+                                           source="ask_user_interrupt",
+                                           timeout=600.0)
+            answer = _format_ask_answer(result)
+        except Exception as e:
+            return f"(exit_plan_mode failed: {e})"
+    else:
+        # CLI path: print the plan and confirm.
+        print(f"\n\033[33m[plan review] {question}\033[0m")
+        answer = input("  批准并执行? [y/N]: ").strip()
+    a = (answer or "").strip().lower()
+    if any(k in a for k in ("批准", "approve", "执行", "execute", "yes", "y")):
+        if s is not None:
+            s.context.pop("plan_mode", None)
+        return "✅ 方案已批准。规划模式已退出，现在可以按方案执行了。"
+    return "❌ 方案被拒绝。你仍处于规划模式，请根据反馈修改方案后重新调用 exit_plan_mode 提交。"
 
 
 def _format_ask_answer(result) -> str:
@@ -787,6 +852,17 @@ BUILTIN_TOOLS = [
                                      "detail": {"type": "string"},
                                      "multi_select": {"type": "boolean"}},
                       "required": ["question"]}},
+    {"name": "exit_plan_mode", "description":
+     "Present the completed plan to the user for approval and exit plan mode. "
+     "Call this ONCE when you have finished read-only exploration and have a "
+     "complete implementation plan. Only available in plan mode. On approval, "
+     "plan mode exits and you regain the full tool set to execute the plan. "
+     "On rejection, you stay in plan mode and revise the plan. Do NOT use "
+     "ask_user to submit a plan — use this tool.",
+     "input_schema": {"type": "object",
+                      "properties": {"plan": {"type": "string",
+                                       "description": "The complete plan to present for approval (files to change, how, why)."}},
+                      "required": ["plan"]}},
     {"name": "show_widget", "description":
      "Render an inline visual widget to the user — an SVG chart/flowchart or an "
      "interactive HTML snippet. Use for diagrams, plots, and small interactive "
@@ -970,7 +1046,7 @@ BUILTIN_HANDLERS = {
     "edit_file": run_edit, "list_dir": run_list_dir,
     "web_fetch": run_web_fetch, "web_search": run_web_search,
     "glob": run_glob, "grep": run_grep, "ask_user": run_ask_user,
-    "show_widget": run_show_widget,
+    "show_widget": run_show_widget, "exit_plan_mode": run_exit_plan_mode,
     "task_output": run_task_output, "task_stop": run_task_stop,
     "task_list": run_task_list,
     "todo_write": run_todo_write, "task": spawn_subagent,

@@ -62,7 +62,7 @@ def agent_loop(session: Session):
         if _DBG:
             print(f"[ALOOP] {label} t={_time.monotonic()-_t:.3f}s", flush=True)
         _t = _time.monotonic()
-    tools, handlers = assemble_tool_pool()
+    tools, handlers = assemble_tool_pool(context)
     _phase("assemble_tool_pool(init)")
     state = RecoveryState()
     max_tokens = DEFAULT_MAX_TOKENS
@@ -112,7 +112,7 @@ def agent_loop(session: Session):
         _phase("prepare_context")
         context = update_context(context, messages)
         session.context = context
-        tools, handlers = assemble_tool_pool()
+        tools, handlers = assemble_tool_pool(context)
         _phase("update_context+assemble_tool_pool")
 
         try:

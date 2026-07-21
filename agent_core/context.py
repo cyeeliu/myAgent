@@ -16,11 +16,16 @@ def update_context(context: dict, messages: list) -> dict:
     if memories is None:
         idx = read_memory_index()
         memories = idx[:2000] if idx else ""
-    return {
-        "memories": memories,
-        "connected_mcp": list(_mcp_clients().keys()),
-        "active_teammates": list(active_teammates.keys()),
-    }
+    # Merge into the existing context instead of rebuilding a fresh dict so
+    # caller-set flags survive across turns. This is load-bearing for plan_mode
+    # (explore → approve → exit spans multiple turns) and team_mode; previously
+    # the fresh 3-key dict dropped them every turn. Writers are only the gateway
+    # (team_mode/plan_mode) and the loop (memories), so no junk accumulates.
+    out = dict(context)
+    out["memories"] = memories
+    out["connected_mcp"] = list(_mcp_clients().keys())
+    out["active_teammates"] = list(active_teammates.keys())
+    return out
 
 def prepare_context(messages: list) -> list:
     # Every LLM turn enters through the same context budget pipeline.

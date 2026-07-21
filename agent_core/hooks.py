@@ -22,6 +22,22 @@ DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="]
 
 DESTRUCTIVE = ["rm ", "> /etc/", "chmod 777"]
 
+# Plan-mode bash gate: bash is allowed for exploration (ls/cat/git status) but
+# must not mutate. Cf. Claude Code plan mode read-only enforcement. Substring
+# match on the command; conservative — a false-positive on a read-only command
+# is annoying but safe, a false-negative on a write command defeats plan mode.
+_PLAN_MODE_BASH_DENY = [
+    "rm ", "rmdir", "mv ", "cp ", "mkdir ", "touch ", "chmod ", "chown ",
+    " > ", " >> ", ">", ">>", "tee ",
+    "git add", "git commit", "git push", "git pull", "git reset", "git checkout",
+    "git rebase", "git merge", "git stash", "git rm", "git mv", "git apply",
+    "git clean", "git restore",
+    "npm install", "npm uninstall", "npm i ", "yarn add", "yarn remove", "pnpm add",
+    "pip install", "pip uninstall", "pip3 install", "python -m pip", "uv add", "uv pip",
+    "docker ", "docker-compose", "kill ", "pkill", "curl -X", "wget ", "scp ", "rsync ",
+    "sed -i", "awk -i", "truncate", "ln -s", "tar ",
+]
+
 def _ask(permission, events, reason, detail, block):
     """Emit a permission_request and resolve via the Permission object.
 
@@ -80,6 +96,22 @@ def check_permission(block, permission: Permission, events=None):
     # ask/deny entirely — only the hardcoded safety backstop below runs.
 
     # ── Hardcoded safety backstop (runs regardless of policy level) ──
+    # Plan-mode bash read-only gate: bash is in the plan-mode tool allowlist
+    # for exploration, but must not mutate. Deny mutating commands outright
+    # (cf. Claude Code plan mode). Best-effort — never breaks the loop.
+    if block.name == "bash":
+        try:
+            from agent_core.mcp import get_current_session
+            sess = get_current_session()
+            if sess is not None and sess.context.get("plan_mode"):
+                command = block.input.get("command", "")
+                for pat in _PLAN_MODE_BASH_DENY:
+                    if pat in command:
+                        return (f"Permission denied in plan mode: '{pat.strip()}' "
+                                f"looks mutating. 完成探索后用 exit_plan_mode 提交方案，"
+                                f"批准即可执行写操作。")
+        except Exception:
+            pass
     if block.name == "bash":
         command = block.input.get("command", "")
         for pattern in DENY_LIST:

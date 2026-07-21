@@ -64,4 +64,21 @@ def assemble_system_prompt(context: dict) -> str:
                 "配合 check_inbox 轮询 leader 的结果，必要时用 review_plan 审阅/批准\n"
                 "成员计划，最后把团队产出综合成最终答复。不要自己直接回答用户的问题。"
             )
+    # ── 规划模式 (Plan Mode) directive ──
+    # Set by the gateway (agent_compat.py CHAT_SEND) when the user picks
+    # mode='agent.plan'. The tool pool is already restricted to read-only +
+    # exit_plan_mode (mcp.assemble_tool_pool); this directive tells the agent
+    # what to do: explore read-only, then submit the plan via exit_plan_mode
+    # for user approval. Approval pops plan_mode → full tools next turn.
+    if context.get("plan_mode"):
+        sections.append(
+            "## 规划模式 (Plan Mode)\n"
+            "你处于规划模式。只能用只读工具探索代码库，**禁止修改任何文件或状态**。\n"
+            "探索完成后，产出一个详细实施方案（改哪些文件、怎么改、为什么），然后调用\n"
+            "  exit_plan_mode(plan=<你的完整方案>)\n"
+            "把方案提交给用户审批。\n"
+            "- 用户选「批准并执行」→ 规划模式自动退出，你将获得全部工具，按方案执行。\n"
+            "- 用户选「拒绝」→ 继续留在规划模式，根据反馈修改方案后重新调用 exit_plan_mode 提交。\n"
+            "在得到批准前不要尝试执行任何修改。不要用 ask_user 提交方案，必须用 exit_plan_mode。"
+        )
     return "\n\n".join(sections)

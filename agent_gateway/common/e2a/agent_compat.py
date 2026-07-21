@@ -102,6 +102,16 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
             gs.agent.context["team_mode"] = names[0] if len(names) == 1 else {"teams": names}
         else:
             gs.agent.context.pop("team_mode", None)
+        # ── 规划模式 (Plan Mode): cf. Claude Code plan mode. Flip a context
+        # flag; prompt.py adds a read-only directive and mcp.assemble_tool_pool
+        # restricts the tool pool to read-only + exit_plan_mode. The agent
+        # explores, then calls exit_plan_mode(plan=...) which surfaces an
+        # approval dialog; approval pops plan_mode so the next turn restores
+        # the full tool set. PLAN is the default mode in the frontend selector.
+        if req.mode == Mode.PLAN:
+            gs.agent.context["plan_mode"] = True
+        else:
+            gs.agent.context.pop("plan_mode", None)
         # Persist the mode per-session so restoring it from the sidebar reports
         # the right mode instead of always falling back to agent.fast.
         try:

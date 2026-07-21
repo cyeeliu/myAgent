@@ -233,21 +233,48 @@ def connect_mcp(name: str, command: str = None, args: list = None,
     return (f"Connected to MCP server '{name}'. "
             f"Discovered {len(client.tools)} tools: {', '.join(tool_names)}")
 
-def assemble_tool_pool() -> tuple[list[dict], dict]:
-    """Merge builtin tools + all MCP tools into one pool."""
+def assemble_tool_pool(context: dict | None = None) -> tuple[list[dict], dict]:
+    """Merge builtin tools + all MCP tools into one pool.
+
+    In plan mode (context.get("plan_mode")) the pool is restricted to a
+    read-only allowlist + the `exit_plan_mode` approval gate (cf. Claude Code
+    plan mode). MCP tools are hidden entirely in plan mode — we can't tell
+    which are read-only."""
     from agent_core.tools import BUILTIN_HANDLERS, BUILTIN_TOOLS
-    tools = list(BUILTIN_TOOLS)
-    handlers = dict(BUILTIN_HANDLERS)
-    for server_name, mcp_client in _mcp_clients().items():
-        safe_server = normalize_mcp_name(server_name)
-        for tool_def in mcp_client.tools:
-            safe_tool = normalize_mcp_name(tool_def["name"])
-            prefixed = f"mcp__{safe_server}__{safe_tool}"
-            tools.append({
-                "name": prefixed,
-                "description": tool_def.get("description", ""),
-                "input_schema": tool_def.get("inputSchema", {}),
-            })
-            handlers[prefixed] = (
-                lambda *, c=mcp_client, t=tool_def["name"], **kw: c.call_tool(t, kw))
+    plan_mode = bool(context and context.get("plan_mode"))
+    if plan_mode:
+        tools = [t for t in BUILTIN_TOOLS if t["name"] in _PLAN_MODE_ALLOWED]
+        handlers = {k: v for k, v in BUILTIN_HANDLERS.items()
+                    if k in _PLAN_MODE_ALLOWED}
+    else:
+        tools = list(BUILTIN_TOOLS)
+        handlers = dict(BUILTIN_HANDLERS)
+        for server_name, mcp_client in _mcp_clients().items():
+            safe_server = normalize_mcp_name(server_name)
+            for tool_def in mcp_client.tools:
+                safe_tool = normalize_mcp_name(tool_def["name"])
+                prefixed = f"mcp__{safe_server}__{safe_tool}"
+                tools.append({
+                    "name": prefixed,
+                    "description": tool_def.get("description", ""),
+                    "input_schema": tool_def.get("inputSchema", {}),
+                })
+                handlers[prefixed] = (
+                    lambda *, c=mcp_client, t=tool_def["name"], **kw: c.call_tool(t, kw))
     return tools, handlers
+
+
+# Read-only tools available in plan mode + the exit_plan_mode approval gate.
+# Excludes all mutating / orchestration tools (write_file, edit_file, worktree
+# mutate, cron create/cancel, teammates, task graph writes, subagent dispatch,
+# mcp connect, team protocols). bash is kept — exploration needs git/ls/cat —
+# and the write path (write_file/edit_file) is already cut, with the plan-mode
+# prompt directive reinforcing read-only intent.
+_PLAN_MODE_ALLOWED = {
+    "read_file", "glob", "grep", "list_dir", "bash",
+    "web_fetch", "web_search", "todo_write",
+    "load_skill", "compact", "show_widget",
+    "list_tasks", "get_task", "list_crons",
+    "task_list", "task_output",
+    "exit_plan_mode",
+}

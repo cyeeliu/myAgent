@@ -389,6 +389,12 @@ class GatewaySession:
 
     def _run_turn(self):
         debug("turn begin sid=%r seq=%r", self.session_id, getattr(self.agent, "_seq", 0))
+        # Capture plan_mode at turn start so the finally block can detect an
+        # exit_plan_mode approval (plan_mode popped mid-turn) and persist the
+        # mode change to DB. Without this, the DB keeps "agent.plan" after
+        # approval and a reconnect (via _build mode rehydrate) wrongly re-enters
+        # plan mode. Surgical: only writes on the plan→non-plan transition.
+        plan_at_start = bool(self.agent.context.get("plan_mode"))
         try:
             if self.agent.workdir is not None:
                 code.set_workdir(self.agent.workdir)
@@ -419,6 +425,14 @@ class GatewaySession:
                 self.ctx_store.snapshot(self.agent.context_messages)
             except Exception:
                 pass  # persistence failure must not mask the turn result
+            # exit_plan_mode approval transitioned plan_mode True→False mid-turn;
+            # persist the new mode so reconnect (_build mode rehydrate) resumes in
+            # fast/executing state instead of wrongly re-entering plan mode.
+            if plan_at_start and not self.agent.context.get("plan_mode"):
+                try:
+                    db.save_session_mode(self.session_id, "agent.fast")
+                except Exception:
+                    pass
             # Refresh on-disk session files so the browser reflects the new turn.
             _write_session_files(self.session_id, self.agent.record)
             # Clear the worker so the next post_message isn't rejected as
@@ -535,7 +549,8 @@ class SessionManager:
                chat_record: Optional[list] = None,
                llm_context: Optional[list] = None,
                created_at: Optional[float] = None,
-               last_activity: Optional[float] = None) -> GatewaySession:
+               last_activity: Optional[float] = None,
+               mode: Optional[str] = None) -> GatewaySession:
         """Construct a GatewaySession with its pipes/sink/agent, optionally
         seeded with persisted chat_record + llm_context (hydration)."""
         loop = loop or asyncio.get_event_loop()
@@ -549,6 +564,13 @@ class SessionManager:
                         context=code.update_context({}, []))
         agent.record_sinks = [ChatRecordSink(chat_pipe)]
         agent.workdir = SESSION_STATE_ROOT / sid
+        # Rehydrate the mode flag so a plan-mode session resumed after idle
+        # eviction / replica crash keeps its read-only restriction. The DB mode
+        # is the source of truth (chat.send persists it; _run_turn updates it
+        # on exit_plan_mode approval). team_mode restore needs team-name
+        # resolution and only acts on turn 1 — left for later.
+        if mode == "agent.plan":
+            agent.context["plan_mode"] = True
         if chat_record:
             agent.record = list(chat_record)
             # Repopulate per-session todos from the last todo_write in the record
@@ -621,7 +643,7 @@ class SessionManager:
             created_at = row.get("created_at")
             last_activity = row.get("last_activity")
         gs = self._build(sid, transport, loop, chat_record, llm_context,
-                         created_at, last_activity)
+                         created_at, last_activity, row.get("mode") if row else None)
         if row is None:
             db.create_session_row(gs.session_id, gs.transport, gs.created_at, gs._title())
         with self._lock:
@@ -644,7 +666,8 @@ class SessionManager:
             return None
         gs = self._build(sid, row.get("transport") or "ws", loop,
                          row.get("chat_record") or [], row.get("llm_context") or [],
-                         row.get("created_at"), row.get("last_activity"))
+                         row.get("created_at"), row.get("last_activity"),
+                         row.get("mode"))
         with self._lock:
             self._sessions[sid] = gs
         return gs
