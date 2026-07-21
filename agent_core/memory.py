@@ -213,6 +213,20 @@ def select_relevant_memories(messages: list, max_items: int = 5) -> list[str]:
     if not files:
         return []
 
+    # Drop memories matching the forbidden regex (security panel config) so
+    # they never enter the catalog / injection. Best-effort, never raises.
+    try:
+        from agent_core import permissions
+        if files:
+            files = [f for f in files
+                     if not permissions.matches_forbidden(
+                         f["name"] + " " + f["description"] + " "
+                         + f.get("body", ""))]
+    except Exception:  # noqa: BLE001
+        pass
+    if not files:
+        return []
+
     recent_texts = []
     for msg in reversed(messages):
         if msg.get("role") == "user":
@@ -323,12 +337,21 @@ def extract_memories(messages: list) -> int:
             mem_type = "user"
         desc = mem.get("description", "")
         body = mem.get("body", "")
-        if desc and body:
-            try:
-                write_memory_file(name, mem_type, desc, body)
-                count += 1
-            except Exception:
-                pass
+        if not (desc and body):
+            continue
+        # Skip memories matching the forbidden regex (security panel config)
+        # so sensitive content is never persisted. Best-effort, never raises.
+        try:
+            from agent_core import permissions
+            if permissions.matches_forbidden(name + " " + desc + " " + body):
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            write_memory_file(name, mem_type, desc, body)
+            count += 1
+        except Exception:
+            pass
     return count
 
 def consolidate_memories() -> None:

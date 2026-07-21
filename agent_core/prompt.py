@@ -36,4 +36,32 @@ def assemble_system_prompt(context: dict) -> str:
     mcp_names = list(_mcp_clients().keys())
     if mcp_names:
         sections.append(f"Connected MCP servers: {', '.join(mcp_names)}")
+    # ── 集群模式 (Cluster Mode) directive ──
+    # Set by the gateway (agent_compat.py CHAT_SEND) when the user picks
+    # mode='team'. Steers the agent to start_team + orchestrate instead of
+    # answering directly. str = single configured team; dict{"teams": [...]} =
+    # multiple, let the agent pick the best fit for the task.
+    team_mode = context.get("team_mode")
+    if team_mode:
+        if isinstance(team_mode, dict) and team_mode.get("teams"):
+            avail = ", ".join(str(t) for t in team_mode["teams"])
+            sections.append(
+                "## 集群模式 (Cluster Mode)\n"
+                "用户选择了集群模式。可用团队：" + avail + "。\n"
+                "请根据用户任务挑选最合适的一个团队，然后立即调用\n"
+                "  start_team(team_name=<你选的团队>, task=<用户的请求>)\n"
+                "启动团队。随后用 wait(sources=[\"team\",\"background\"], timeout=600)\n"
+                "配合 check_inbox 轮询 leader 的结果，必要时用 review_plan 审阅/批准\n"
+                "成员计划，最后把团队产出综合成最终答复。不要自己直接回答用户的问题。"
+            )
+        else:
+            name = str(team_mode)
+            sections.append(
+                "## 集群模式 (Cluster Mode)\n"
+                "用户选择了集群模式。请立即调用\n"
+                "  start_team(team_name=\"" + name + "\", task=<用户的请求>)\n"
+                "启动团队。随后用 wait(sources=[\"team\",\"background\"], timeout=600)\n"
+                "配合 check_inbox 轮询 leader 的结果，必要时用 review_plan 审阅/批准\n"
+                "成员计划，最后把团队产出综合成最终答复。不要自己直接回答用户的问题。"
+            )
     return "\n\n".join(sections)

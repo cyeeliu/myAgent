@@ -1630,25 +1630,34 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (content) {
           revealPendingContextUsage();
         }
-        if (currentMode === 'team' && content) {
+        if (currentMode === 'team') {
           clearThinkingForVisibleOutput();
           const existingMsg = findActiveTeamLeaderMessage();
           const timestamp = payload.timestamp || Date.now();
 
           if (existingMsg) {
-            updateMessage(existingMsg.id, {
+            if (content) {
+              updateMessage(existingMsg.id, {
+                content: `team.leader:${JSON.stringify({ content, timestamp })}`,
+                isStreaming: false,
+                timestamp: normalizeEventTimestampIso(payload.timestamp),
+              });
+            } else {
+              // done{} 无 content：boss 的最终文本已由 chat.delta 送达，
+              // 这里只需关掉 team-leader 消息的流式光标，否则会一直闪烁。
+              updateMessage(existingMsg.id, { isStreaming: false });
+            }
+          } else if (content) {
+            addMessage({
+              id: `team-leader-${Date.now()}`,
+              role: 'system',
               content: `team.leader:${JSON.stringify({ content, timestamp })}`,
-              isStreaming: false,
-              timestamp: normalizeEventTimestampIso(payload.timestamp),
+              timestamp: new Date().toISOString(),
             });
-            return;
           }
-          addMessage({
-            id: `team-leader-${Date.now()}`,
-            role: 'system',
-            content: `team.leader:${JSON.stringify({ content, timestamp })}`,
-            timestamp: new Date().toISOString(),
-          });
+          // team 模式下 currentStreamId 本就为 null（chat.delta team 分支
+          // 不调 startStreaming），stopStreaming 是 no-op；防御性清掉。
+          stopStreaming();
           return;
         }
 

@@ -67,6 +67,17 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
                     if isinstance(a0, dict):
                         allow = bool(a0.get("allow", a0.get("selected", True)))
                         modify = a0.get("modify")
+                        # UserQuestionModal submits {selected_options: [label]}
+                        # where label is "Allow"/"Deny" (see wire.py's
+                        # permission_request mapping). Interpret it so the
+                        # user's choice actually reaches the FuturePermission.
+                        so = a0.get("selected_options")
+                        if isinstance(so, list) and so:
+                            label = str(so[0]).strip().lower()
+                            if label in ("deny", "拒绝", "no", "n", "false"):
+                                allow = False
+                            elif label in ("allow", "允许", "yes", "y", "true"):
+                                allow = True
                 ok_ans = gs.grant(rid, allow, modify)
             if not ok_ans:
                 return AgentResponse(req.request_id, ok=False,
@@ -75,6 +86,29 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
         text = params.get("content") or params.get("text") or ""
         if not isinstance(text, str):
             text = str(text)
+        # ── 集群模式 (Cluster Mode): route mode='team' to the team engine.
+        # The gateway doesn't run the team itself — it flips a context flag and
+        # the system-prompt directive (prompt.py) tells the agent to call
+        # start_team(team_name, task=<user request>) and orchestrate via
+        # wait/check_inbox/review_plan. Team selection is automatic:
+        # 0 teams → error (configure one first); 1 → use it; >1 → pass the
+        # list to the agent and let it pick based on the task.
+        if req.mode == Mode.TEAM:
+            from agent_core.agents import list_team_names
+            names = list_team_names()
+            if not names:
+                return AgentResponse(req.request_id, ok=False,
+                                     error="请先在配置中创建一个团队（集群模式需要一个团队定义）")
+            gs.agent.context["team_mode"] = names[0] if len(names) == 1 else {"teams": names}
+        else:
+            gs.agent.context.pop("team_mode", None)
+        # Persist the mode per-session so restoring it from the sidebar reports
+        # the right mode instead of always falling back to agent.fast.
+        try:
+            from agent_gateway import db
+            db.save_session_mode(sid, _mode_str(req) or "agent.fast")
+        except Exception:
+            pass
         ok_flag = gs.post_message(text)
         debug("chat.send posted sid=%r seq_now=%r ok=%s",
               sid, getattr(gs.agent, "_seq", 0), ok_flag)
@@ -88,8 +122,10 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
             return AgentResponse(req.request_id, ok=False, error="missing session_id")
         gs = sessions.get(sid)
         if gs is None:
+            debug("chat.interrupt sid=%r NOT FOUND (not in this replica's registry)", sid)
             return AgentResponse(req.request_id, ok=False, error="session not found")
         intent = params.get("intent", "cancel")
+        debug("chat.interrupt sid=%r intent=%r", sid, intent)
         if intent == "pause":
             gs.interrupt()
         elif intent == "supplement":
@@ -115,6 +151,13 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
             if isinstance(a0, dict):
                 allow = bool(a0.get("allow", a0.get("selected", True)))
                 modify = a0.get("modify")
+                so = a0.get("selected_options")
+                if isinstance(so, list) and so:
+                    label = str(so[0]).strip().lower()
+                    if label in ("deny", "拒绝", "no", "n", "false"):
+                        allow = False
+                    elif label in ("allow", "允许", "yes", "y", "true"):
+                        allow = True
         granted = gs.grant(rid, allow, modify)
         if not granted:
             return AgentResponse(req.request_id, ok=False,
@@ -208,6 +251,25 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
     # ── config / models ──
     if m == ReqMethod.CONFIG_GET:
         return AgentResponse(req.request_id, payload=_config_get())
+
+    # ── permissions (security panel: per-tool allow/ask/deny) ──
+    if m == ReqMethod.PERMISSIONS_TOOLS_GET:
+        from agent_core import permissions
+        return AgentResponse(req.request_id, payload=permissions.get_policy())
+    if m == ReqMethod.PERMISSIONS_TOOLS_UPDATE:
+        from agent_core import permissions
+        tool = str(params.get("tool") or "").strip()
+        level = str(params.get("level") or "").strip().lower()
+        if not tool or level not in permissions.LEVELS:
+            return AgentResponse(req.request_id, ok=False,
+                                 error="invalid tool or level")
+        return AgentResponse(req.request_id,
+                             payload=permissions.set_tool_level(tool, level))
+    if m == ReqMethod.PERMISSIONS_TOOLS_DELETE:
+        from agent_core import permissions
+        tool = str(params.get("tool") or "").strip()
+        return AgentResponse(req.request_id,
+                             payload=permissions.delete_tool(tool))
 
     if m == ReqMethod.CONFIG_SET:
         updates = {k: v for k, v in params.items() if k != "session_id"}
@@ -637,9 +699,16 @@ def _list_sessions(sessions) -> list[dict]:
             message_count=len(rec),
             transport=r["transport"],
             last_activity=r["last_activity"],
+            mode=r.get("mode", "agent.fast"),
         )
     for gs in sessions.all():
         meta = gs.meta()
+        # Live session mode: prefer the DB-persisted mode (authoritative, set
+        # on every chat.send); fall back to the in-memory context flag (set by
+        # chat.send when req.mode == TEAM) so a just-started team session
+        # reports "team" before the DB row is written.
+        db_mode = by_sid.get(gs.session_id, {}).get("mode")
+        live_mode = db_mode or ("team" if gs.agent.context.get("team_mode") else "agent.fast")
         by_sid[gs.session_id] = _session_shape(
             session_id=gs.session_id,
             title=meta.get("title", ""),
@@ -649,6 +718,7 @@ def _list_sessions(sessions) -> list[dict]:
             message_count=meta.get("history_len", 0),
             transport=meta.get("transport", "auto"),
             last_activity=meta.get("last_activity", 0),
+            mode=live_mode,
         )
     return sorted(by_sid.values(),
                   key=lambda m: m.get("last_activity", 0), reverse=True)
@@ -656,13 +726,14 @@ def _list_sessions(sessions) -> list[dict]:
 
 def _session_shape(*, session_id: str, title: str, project_path: str,
                    created_at: Any, updated_at: Any, message_count: int,
-                   transport: str, last_activity: Any) -> dict:
+                   transport: str, last_activity: Any,
+                   mode: str = "agent.fast") -> dict:
     """Coerce to the jiuwenswarm Session interface (string timestamps, defaults)."""
     return {
         "session_id": session_id,
         "title": title or "",
         "project_path": project_path,
-        "mode": "agent.fast",
+        "mode": mode or "agent.fast",
         "status": "active",
         "message_count": message_count,
         "created_at": _iso(created_at),
@@ -714,6 +785,20 @@ def _config_get() -> dict:
         out.update(code.agents_flat_config())
     except Exception:  # noqa: BLE001
         pass
+    # Security-tab group keys. The ConfigPanel forms a "permissions" group from
+    # `permissions_enabled` and a "memory" group from the memory_forbidden_*
+    # keys. Values come from the persisted security policy (permissions.py),
+    # not hardcoded seeds, so toggles/patterns survive a reload.
+    try:
+        from agent_core import permissions
+        out["permissions_enabled"] = "true" if permissions.is_enabled() else "false"
+        mf = permissions.get_memory_forbidden()
+        out["memory_forbidden_enabled"] = "true" if mf.get("enabled") else "false"
+        out["memory_forbidden_description"] = mf.get("pattern", "")
+    except Exception:  # noqa: BLE001
+        out.setdefault("permissions_enabled", "true")
+        out.setdefault("memory_forbidden_enabled", "false")
+        out.setdefault("memory_forbidden_description", "")
     return out
 
 
@@ -728,4 +813,30 @@ def _config_set(updates: dict) -> dict:
             updates.get("fallback_model"),
         )
         return {"updated": ["model_id"], "applied_without_restart": True}
+    # Security-tab keys persist into the security policy (permissions.py),
+    # not model_config. Handle them separately so toggles/patterns stick.
+    updated: list[str] = []
+    try:
+        from agent_core import permissions
+        if "permissions_enabled" in updates:
+            permissions.set_enabled(
+                str(updates.get("permissions_enabled", "")).lower()
+                in ("true", "1", "yes"))
+            updated.append("permissions_enabled")
+        mf_en = updates.get("memory_forbidden_enabled")
+        mf_pat = updates.get("memory_forbidden_description")
+        if mf_en is not None or mf_pat is not None:
+            cur = permissions.get_memory_forbidden()
+            en = (str(mf_en).lower() in ("true", "1", "yes")
+                  if mf_en is not None else bool(cur.get("enabled", False)))
+            pat = str(mf_pat) if mf_pat is not None else str(cur.get("pattern", ""))
+            permissions.set_memory_forbidden(en, pat)
+            if mf_en is not None:
+                updated.append("memory_forbidden_enabled")
+            if mf_pat is not None:
+                updated.append("memory_forbidden_description")
+    except Exception:  # noqa: BLE001
+        pass
+    if updated:
+        return {"updated": updated, "applied_without_restart": True}
     return {"updated": [], "applied_without_restart": True}

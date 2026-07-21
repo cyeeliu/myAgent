@@ -31,6 +31,10 @@ _KIND_MAP = {
     "memory": "chat.memory",
     "ping": "heartbeat",
     "history_message": "history.message",
+    "team_member": "team.member",
+    "team_task": "team.task",
+    "team_event": "team.event",
+    "team_message": "team.message",
 }
 
 
@@ -106,6 +110,11 @@ def _remap_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
     if kind == "error":
         return {"error": payload.get("error") or payload.get("text", ""),
                 "recoverable": bool(payload.get("recoverable", False))}
+    # team.* events: payload is already {"event": {...}} (session_id tagged by
+    # the WS drain). Pass through unchanged so the frontend's payload.event
+    # reader finds the event object.
+    if kind in ("team_member", "team_task", "team_event", "team_message"):
+        return payload
     return payload
 
 
@@ -121,11 +130,22 @@ def frame_to_event(frame: dict[str, Any]) -> Optional[dict[str, Any]]:
     seq = frame.get("seq")
     # Normalize permission_request → ask_user_question payload shape.
     if kind == "permission_request":
+        reason = payload.get("reason", "tool")
+        detail = payload.get("detail", "")
+        # Fold the detail (command / path) into the question body so the user
+        # sees exactly what they are approving. The UserQuestionModal renders
+        # question.question + question.options; it has no separate detail slot.
+        body = f"{reason}: {detail}" if detail else reason
         payload = {
             "request_id": payload.get("request_id") or payload.get("rid") or payload.get("seq"),
             "questions": [{
-                "question": payload.get("reason", "tool"),
-                "detail": payload.get("detail", ""),
+                "header": "Permission",
+                "question": body,
+                "options": [
+                    {"label": "Allow", "description": ""},
+                    {"label": "Deny", "description": ""},
+                ],
+                "multi_select": False,
             }],
             "source": "permission_interrupt",
         }

@@ -7,7 +7,7 @@ from agent_core.session import Session, TerminalSink, CliPermission
 from agent_core.context import update_context
 from agent_core.loop import agent_loop, cron_autorun_loop, print_turn_assistants
 from agent_core.hooks import trigger_hooks
-from agent_core.bus import consume_lead_inbox
+from agent_core.bus import consume_boss_inbox
 
 
 SLASH_HELP = """\
@@ -150,7 +150,7 @@ def main():
             session.context = update_context(session.context, session.record)
             print_turn_assistants(session.record, turn_start)
 
-        inbox = consume_lead_inbox(route_protocol=True)
+        inbox = consume_boss_inbox(route_protocol=True)
         if inbox:
             def inbox_label(msg):
                 req_id = msg.get("metadata", {}).get("request_id", "")

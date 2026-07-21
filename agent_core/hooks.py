@@ -22,39 +22,98 @@ DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="]
 
 DESTRUCTIVE = ["rm ", "> /etc/", "chmod 777"]
 
+def _ask(permission, events, reason, detail, block):
+    """Emit a permission_request and resolve via the Permission object.
+
+    Gateway path mirrors run_ask_user: generate a request_id, register the
+    future FIRST (so a fast client answer can't race the registration), emit
+    the event WITH the request_id, then block on the future. The request_id
+    must round-trip so gs.grant(rid) finds the pending future — the
+    FuturePermission's internally-generated id is never sent to the client,
+    so we drive the resolver directly here.
+
+    CLI path (no resolver on the permission object) → CliPermission input prompt."""
+    import uuid
+    request_id = uuid.uuid4().hex[:12]
+    payload = {"request_id": request_id, "reason": reason, "detail": detail,
+               "tool": block.name, "input": block.input}
+    resolver = getattr(permission, "resolver", None)
+    if resolver is not None:
+        try:
+            fut = resolver(block, request_id)
+        except Exception:
+            fut = None
+        if events is not None:
+            events.emit("permission_request", payload)
+        if fut is not None:
+            try:
+                decision = fut.result(timeout=getattr(permission, "timeout", 120.0))
+            except Exception:
+                decision = {"allow": False, "modify": None}
+            return bool(decision.get("allow"))
+        return False
+    # CLI path: emit (for any event sink) then prompt via permission.request.
+    if events is not None:
+        events.emit("permission_request", payload)
+    decision = permission.request(block)
+    return bool(decision.get("allow"))
+
+
 def check_permission(block, permission: Permission, events=None):
-    # Non-interactive checks (deny list, path escape) return a deny string
-    # directly. Interactive checks (destructive bash, mcp deploy) emit a
-    # permission_request event and ask the Permission object — CLI prompts
-    # via input, API resolves a future from a WS/REST frame.
+    # Policy-driven gate first, then hardcoded safety backstop (which can never
+    # be bypassed by an "allow" policy — deny-list bash, path escape, and
+    # destructive commands are always enforced).
+    from agent_core import permissions
+
+    if permissions.is_enabled():
+        level = permissions.decide(block.name)
+        if level == "deny":
+            return f"Permission denied by policy: {block.name}"
+        if level == "ask":
+            # Policy asks for this tool — surface a permission_request for every
+            # call. Hardcoded safety (below) still runs as a backstop, but the
+            # ask-level prompt is the primary gate.
+            if not _ask(permission, events, f"policy: ask for {block.name}",
+                        "", block):
+                return "Permission denied by user"
+    # When the master toggle (permissions_enabled) is off, skip the per-tool
+    # ask/deny entirely — only the hardcoded safety backstop below runs.
+
+    # ── Hardcoded safety backstop (runs regardless of policy level) ──
     if block.name == "bash":
         command = block.input.get("command", "")
         for pattern in DENY_LIST:
             if pattern in command:
                 return f"Permission denied: '{pattern}' is on the deny list"
         if any(token in command for token in DESTRUCTIVE):
-            if events is not None:
-                events.emit("permission_request",
-                            {"reason": "destructive command",
-                             "detail": command, "tool": block.name,
-                             "input": block.input})
-            decision = permission.request(block)
-            if not decision.get("allow"):
+            # Destructive commands always ask, even when policy=allow.
+            if not _ask(permission, events, "destructive command",
+                        command, block):
                 return "Permission denied by user"
     if block.name in ("write_file", "edit_file"):
         path = block.input.get("path", "")
         try:
             from agent_core.tools import safe_path
-            safe_path(path)
+            resolved = safe_path(path)
         except Exception:
             return f"Permission denied: path escapes workspace: {path}"
+        # Overwrite prompt: when the target exists and ask_on_overwrite is on,
+        # confirm before clobbering — regardless of policy level (the ask-level
+        # prompt above already covered policy=ask; this catches policy=allow
+        # overwrites too). New-file writes are left through.
+        if permissions.ask_on_overwrite():
+            try:
+                from pathlib import Path
+                if Path(resolved).exists():
+                    if not _ask(permission, events,
+                                "overwrite existing file", str(resolved), block):
+                        return "Permission denied by user"
+            except Exception:
+                pass
     if block.name.startswith("mcp__") and "deploy" in block.name:
-        if events is not None:
-            events.emit("permission_request",
-                        {"reason": f"MCP destructive-looking tool: {block.name}",
-                         "detail": "", "tool": block.name, "input": block.input})
-        decision = permission.request(block)
-        if not decision.get("allow"):
+        if not _ask(permission, events,
+                    f"MCP destructive-looking tool: {block.name}",
+                    "", block):
             return "Permission denied by user"
     return None
 

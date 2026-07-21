@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from typing import Any, Optional
 
 from psycopg_pool import ConnectionPool
@@ -33,7 +34,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_activity DOUBLE PRECISION NOT NULL,
   title         TEXT NOT NULL,
   chat_record   JSONB NOT NULL DEFAULT '[]',
-  llm_context   JSONB NOT NULL DEFAULT '[]'
+  llm_context   JSONB NOT NULL DEFAULT '[]',
+  mode          TEXT NOT NULL DEFAULT 'agent.fast'
 );
 """
 
@@ -58,6 +60,12 @@ BEGIN
     WHERE table_name = 'sessions' AND column_name = 'llm_context'
   ) THEN
     ALTER TABLE sessions ADD COLUMN llm_context JSONB NOT NULL DEFAULT '[]';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'sessions' AND column_name = 'mode'
+  ) THEN
+    ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'agent.fast';
   END IF;
   -- Backfill: old sessions had no llm_context; seed it from the full chat_record
   -- so the first post-split turn has a working (uncompacted) context.
@@ -129,18 +137,20 @@ def _row_to_dict(row) -> dict:
         "title": row[4],
         "chat_record": row[5],
         "llm_context": row[6],
+        "mode": row[7] if len(row) > 7 else "agent.fast",
     }
 
 
-def create_session_row(sid: str, transport: str, created_at: float, title: str) -> None:
+def create_session_row(sid: str, transport: str, created_at: float, title: str,
+                       mode: str = "agent.fast") -> None:
     if _pool is None:
         return
     with _pool.connection() as conn:
         conn.execute(
             "INSERT INTO sessions (session_id, transport, created_at, last_activity, title, "
-            "chat_record, llm_context) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (session_id) DO NOTHING",
-            (sid, transport, created_at, created_at, title, Jsonb([]), Jsonb([])),
+            "chat_record, llm_context, mode) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (session_id) DO NOTHING",
+            (sid, transport, created_at, created_at, title, Jsonb([]), Jsonb([]), mode),
         )
 
 
@@ -155,6 +165,23 @@ def save_chat_record(sid: str, record: list, last_activity: float, title: str) -
             "ON CONFLICT (session_id) DO UPDATE SET last_activity = EXCLUDED.last_activity, "
             "title = EXCLUDED.title, chat_record = EXCLUDED.chat_record",
             (sid, last_activity, last_activity, title, Jsonb(_normalize(record)), Jsonb([])),
+        )
+
+
+def save_session_mode(sid: str, mode: str) -> None:
+    """Persist the session mode (agent.fast / agent.plan / team / auto_harness).
+
+    Set from chat.send when the frontend declares req.mode. Restoring a session
+    reads this so the mode survives a page reload / session switch instead of
+    always falling back to agent.fast."""
+    if _pool is None:
+        return
+    with _pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO sessions (session_id, transport, created_at, last_activity, title, "
+            "chat_record, llm_context, mode) VALUES (%s, '', %s, %s, '', %s, %s, %s) "
+            "ON CONFLICT (session_id) DO UPDATE SET mode = EXCLUDED.mode",
+            (sid, time.time(), time.time(), Jsonb([]), Jsonb([]), mode),
         )
 
 
@@ -176,7 +203,7 @@ def load_session(sid: str) -> Optional[dict]:
     with _pool.connection() as conn:
         cur = conn.execute(
             "SELECT session_id, transport, created_at, last_activity, title, "
-            "chat_record, llm_context FROM sessions WHERE session_id = %s",
+            "chat_record, llm_context, mode FROM sessions WHERE session_id = %s",
             (sid,),
         )
         row = cur.fetchone()
@@ -189,7 +216,7 @@ def list_session_rows() -> list[dict]:
     with _pool.connection() as conn:
         cur = conn.execute(
             "SELECT session_id, transport, created_at, last_activity, title, "
-            "chat_record, llm_context FROM sessions ORDER BY last_activity DESC"
+            "chat_record, llm_context, mode FROM sessions ORDER BY last_activity DESC"
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
 

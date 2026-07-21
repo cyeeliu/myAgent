@@ -15,11 +15,64 @@ from agent_core.worktrees import _worktrees_dir
 # top-imports teammates to build BUILTIN_HANDLERS at load time).
 
 
-active_teammates: dict[str, bool] = {}
+# name → str(session_dir()) of the session that spawned this teammate. The value
+# is the session dir (not a bool) so start_team can detect teammates left over
+# from a DIFFERENT gateway session in the same long-running process and evict
+# them before spawning fresh ones — otherwise a second session starting a team
+# with the same member names hits "Teammate already exists" and never spawns,
+# so no team.member events fire and the frontend TeamArea stays empty. bool()
+# of a non-empty str is True, so team_info's `bool(active_teammates.get(name))`
+# keeps working.
+active_teammates: dict[str, str] = {}
 
 # team_name → leader teammate name. Set by start_team so the main loop's
 # send_to_leader tool can address the leader without knowing its name.
 _team_leaders: dict[str, str] = {}
+
+# team_name → boss session (the gateway chat session that started the team).
+# Used to bridge team engine activity to the boss's event sinks so team.*
+# WebSocket events reach the frontend TeamArea. Set by start_team.
+_team_boss_sessions: dict[str, object] = {}
+
+
+class _InterruptShim:
+    """Events shim for teammate chat_create: exposes `interrupted` (proxied from
+    the boss session so the adapter's mid-stream check breaks when the user hits
+    Stop) and swallows emit() so teammate tokens don't stream into the main chat.
+    """
+    __slots__ = ("_boss",)
+
+    def __init__(self, boss):
+        self._boss = boss
+
+    @property
+    def interrupted(self):
+        return bool(getattr(self._boss, "interrupted", False))
+
+    def streaming(self):  # adapter may read this; not required
+        return False
+
+    def emit(self, *args, **kwargs):
+        pass
+
+
+def _emit_team(boss_session, kind: str, event_obj: dict) -> None:
+    """Best-effort emit a team.* event on the boss session's sinks. The boss
+    session is the gateway chat session that started the team; its sinks feed
+    the EventPipe → WS drain → frontend TeamArea. Thread-safe (session.emit
+    holds its own lock). Never raises — team visualization must not break the
+    team engine. `kind` is an agent_core EVENT_KIND (team_member/team_task/…);
+    the wire layer maps it to the dotted team.* event."""
+    if boss_session is None:
+        return
+    try:
+        boss_session.emit(kind, {"event": event_obj})
+    except Exception:
+        pass
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 IDLE_POLL_INTERVAL = 5
 
@@ -38,11 +91,14 @@ def scan_unclaimed_tasks() -> list[dict]:
 def idle_poll(agent_name: str, messages: list,
               name: str, role: str,
               worktree_context: dict | None = None,
-              overseer: str = "lead") -> str:
+              overseer: str = "boss",
+              boss_session=None) -> str:
     # Autonomous teammates wake up for inbox messages first, then look for
     # unclaimed tasks. This keeps direct protocol messages higher priority.
     for _ in range(IDLE_TIMEOUT // IDLE_POLL_INTERVAL):
         time.sleep(IDLE_POLL_INTERVAL)
+        if boss_session is not None and getattr(boss_session, "interrupted", False):
+            return "interrupted"
         inbox = BUS.read_inbox(agent_name)
         if inbox:
             for msg in inbox:
@@ -79,32 +135,52 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
                           tool_names: list[str] | None = None,
                           persona: str | None = None,
                           display_name: str | None = None,
-                          overseer: str = "lead") -> str:
+                          overseer: str = "boss",
+                          boss_session=None,
+                          team_name: str | None = None,
+                          member_mode: str = "member") -> str:
     """Spawn an autonomous teammate thread.
 
     overseer = who this teammate reports to / submits plans to. For a team
-    member, overseer = the leader's name; for a team leader, overseer = "lead"
+    member, overseer = the leader's name; for a team leader, overseer = "boss"
     (the main loop). Result messages, shutdown responses, and submit_plan
-    requests are all routed to overseer."""
+    requests are all routed to overseer.
+
+    boss_session / team_name: when spawned via start_team in cluster mode, the
+    boss gateway session is threaded in so the teammate can emit team.member
+    status events (spawned/done/shutdown) to the frontend TeamArea. member_mode
+    = "member" or "leader" (used as the team.member event `mode` field)."""
     from agent_core.tools import (call_tool_handler, run_bash, run_read,
                                   run_write, run_edit, run_glob, run_list_dir,
                                   teammate_tool_schemas,
                                   MEMBER_TOOL_NAMES, SUBMIT_PLAN_TOOL)
-    if name in active_teammates:
-        return f"Teammate '{name}' already exists"
 
     member_model = model or MODEL
 
     # session_dir() is threading.local and child threads don't inherit it —
     # capture it here and restore inside run() so the teammate's mailbox
-    # reads/writes, task graph, and worktrees resolve to the lead's session.
-    # Without this, send_message (lead) writes to .sessions/<sid>/.mailboxes/
+    # reads/writes, task graph, and worktrees resolve to the boss's session.
+    # Without this, send_message (boss) writes to .sessions/<sid>/.mailboxes/
     # but the teammate reads from the default workspace .mailboxes/ — messages
-    # never arrive and replies never reach the lead.
+    # never arrive and replies never reach the boss.
     captured_session_dir = session_dir()
+    cur_sd = str(captured_session_dir)
+
+    existing_sd = active_teammates.get(name)
+    if existing_sd == cur_sd:
+        # Same session already has a live teammate by this name — genuine dup.
+        return f"Teammate '{name}' already exists"
+    if existing_sd is not None:
+        # A teammate by this name is still registered from a DIFFERENT session
+        # (the gateway process outlives any one chat session). Evict the stale
+        # entry so this session can spawn a fresh thread; the orphaned thread
+        # reads its own (old) session's mailbox, so it won't interfere — it
+        # times out of idle_poll and exits, and its exit-pop is guarded by the
+        # session-dir match below so it can't evict this new entry.
+        active_teammates.pop(name, None)
 
     # Plan approval is a real gate: after submit_plan, the teammate stops
-    # taking model/tool steps until lead sends plan_approval_response.
+    # taking model/tool steps until boss sends plan_approval_response.
     protocol_ctx = {"waiting_plan": None}
     system = f"You are '{name}'"
     if display_name:
@@ -125,6 +201,11 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
             BUS.send(name, overseer, "Shutting down.",
                      "shutdown_response",
                      {"request_id": req_id, "approve": True})
+            _emit_team(boss_session, "team_member", {
+                "type": "team.member.shutdown",
+                "member_id": name,
+                "timestamp": _now_ms(),
+            })
             return True
         if msg_type == "plan_approval_response":
             approve = meta.get("approve", False)
@@ -136,9 +217,19 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
         return False
 
     def run():
-        # Restore the lead's session_dir in this child thread so mailbox/task/
-        # worktree paths match the lead's session (threading.local isn't inherited).
+        # Restore the boss's session_dir in this child thread so mailbox/task/
+        # worktree paths match the boss's session (threading.local isn't inherited).
         set_session_dir(captured_session_dir)
+
+        # Surface this teammate to the frontend TeamArea immediately.
+        _emit_team(boss_session, "team_member", {
+            "type": "team.member.spawned",
+            "member_id": name,
+            "name": display_name or name,
+            "status": "running",
+            "timestamp": _now_ms(),
+            "mode": member_mode,
+        })
 
         # Bound upfront when a member worktree is given (team isolation from
         # turn 1); otherwise stays None until a task with a worktree is claimed.
@@ -185,7 +276,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
 
         # ── Stateful protocol handlers (closures over name + overseer) ──
         # send_message: deliver to any peer (member→leader, leader→member,
-        #   or leader→"lead" to report to the main loop).
+        #   or leader→"boss" to report to the main loop).
         # request_plan / request_shutdown / review_plan: leader-side coordination
         #   over members. review_plan reuses the shared pending_requests global
         #   so approvals route by request_id to state.sender (the submitter).
@@ -214,12 +305,12 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
                 return f"Request {request_id} not found"
             if state.sender == name:
                 # A leader approving its own plan submission is a role confusion:
-                # the lead (main loop) reviews the leader's plan, not the leader
+                # the boss (main loop) reviews the leader's plan, not the leader
                 # itself. Refuse so the approval doesn't route a response back to
                 # the leader (aliee → aliee) and the leader waits on the real
-                # approval from the lead.
+                # approval from the boss.
                 return (f"Request {request_id} is YOUR OWN plan submission — "
-                        "the lead reviews it, not you. Only review_plan a "
+                        "the boss reviews it, not you. Only review_plan a "
                         "member's submitted plan (the request_id the member's "
                         "submit_plan returned).")
             state.status = "approved" if approve else "rejected"
@@ -275,12 +366,21 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
                 sub_handlers[tn] = resolved_handlers[tn]
 
         while True:
+            # Stop the teammate when the boss was interrupted (user hit Stop).
+            # The boss's interrupt() sets boss_session.interrupted; we also pass
+            # an _InterruptShim to chat_create so a mid-call LLM stream breaks
+            # immediately instead of running to the end of the turn.
+            if boss_session is not None and getattr(boss_session, "interrupted", False):
+                break
             if len(messages) <= 3:
                 messages.insert(0, {"role": "user",
                     "content": f"<identity>You are '{name}', role: {role}. "
                                f"Continue your work.</identity>"})
             should_shutdown = False
             for _ in range(10):
+                if boss_session is not None and getattr(boss_session, "interrupted", False):
+                    should_shutdown = True
+                    break
                 inbox = BUS.read_inbox(name)
                 for msg in inbox:
                     stopped = handle_inbox_message(name, msg, messages)
@@ -303,17 +403,22 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
                 try:
                     response = adapter.chat_create(
                         model=member_model, system=system, messages=messages[-20:],
-                        tools=sub_tools, max_tokens=8000)
+                        tools=sub_tools, max_tokens=8000,
+                        stream=True,
+                        events=_InterruptShim(boss_session) if boss_session else None)
                 except Exception as _e:
                     # Surface LLM failures instead of dying silently — otherwise a
                     # bad member model makes the teammate vanish with no diagnostics.
                     print(f"  \033[31m[teammate {name}] chat_create failed "
                           f"(model={member_model}): {type(_e).__name__}: {_e}\033[0m")
                     break
+                if getattr(response, "interrupted", False):
+                    should_shutdown = True
+                    break
                 messages.append({"role": "assistant", "content": response.content})
                 if not has_tool_use(response.content):
-                    # Send the text reply to the lead immediately instead of
-                    # only at thread exit — otherwise the lead waits the full
+                    # Send the text reply to the boss immediately instead of
+                    # only at thread exit — otherwise the boss waits the full
                     # idle_poll timeout (60s) before check_inbox sees anything.
                     _reply = extract_text(response.content)
                     if _reply:
@@ -323,6 +428,9 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
                 results = []
                 for block in response.content:
                     if block.type == "tool_use":
+                        if boss_session is not None and getattr(boss_session, "interrupted", False):
+                            should_shutdown = True
+                            break
                         if block.name == "submit_plan":
                             output = _teammate_submit_plan(
                                 name, block.input.get("plan", ""), overseer)
@@ -357,9 +465,12 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
                 break
             if protocol_ctx["waiting_plan"]:
                 continue
+            if boss_session is not None and getattr(boss_session, "interrupted", False):
+                break
             idle_result = idle_poll(name, messages, name, role, wt_ctx,
-                                    overseer=overseer)
-            if idle_result in ("shutdown", "timeout"):
+                                    overseer=overseer,
+                                    boss_session=boss_session)
+            if idle_result in ("shutdown", "timeout", "interrupted"):
                 break
 
         summary = "Done."
@@ -376,14 +487,32 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
         # (avoids duplicating the reply we already sent on the no-tool-use turn).
         if not sent_reply:
             BUS.send(name, overseer, summary, "result")
-        active_teammates.pop(name, None)
+        # Only pop our own entry — a newer session may have evicted us and
+        # spawned a fresh teammate under the same name; don't evict theirs.
+        if active_teammates.get(name) == str(captured_session_dir):
+            active_teammates.pop(name, None)
+        # Notify the frontend TeamArea that this teammate finished.
+        _emit_team(boss_session, "team_member", {
+            "type": "team.member.status_changed",
+            "member_id": name,
+            "new_status": "done",
+            "timestamp": _now_ms(),
+        })
+        if member_mode == "leader" and team_name:
+            _emit_team(boss_session, "team_task", {
+                "type": "task.completed",
+                "task_id": f"{team_name}-root",
+                "team_name": team_name,
+                "status": "completed",
+                "timestamp": _now_ms(),
+            })
 
-    active_teammates[name] = True
+    active_teammates[name] = cur_sd
     threading.Thread(target=run, daemon=True).start()
     return f"Teammate '{name}' spawned as {role}"
 
 def _teammate_submit_plan(from_name: str, plan: str,
-                          overseer: str = "lead") -> str:
+                          overseer: str = "boss") -> str:
     req_id = new_request_id()
     pending_requests[req_id] = ProtocolState(
         request_id=req_id, type="plan_approval",
@@ -398,14 +527,14 @@ def run_request_shutdown(teammate: str) -> str:
     req_id = new_request_id()
     pending_requests[req_id] = ProtocolState(
         request_id=req_id, type="shutdown",
-        sender="lead", target=teammate,
+        sender="boss", target=teammate,
         status="pending", payload="")
-    BUS.send("lead", teammate, "Shut down.", "shutdown_request",
+    BUS.send("boss", teammate, "Shut down.", "shutdown_request",
              {"request_id": req_id})
     return f"Shutdown request sent to {teammate}"
 
 def run_request_plan(teammate: str, task: str) -> str:
-    BUS.send("lead", teammate, f"Submit plan for: {task}", "message")
+    BUS.send("boss", teammate, f"Submit plan for: {task}", "message")
     return f"Asked {teammate} to submit a plan"
 
 def run_review_plan(request_id: str, approve: bool,
@@ -414,7 +543,7 @@ def run_review_plan(request_id: str, approve: bool,
     if not state:
         return f"Request {request_id} not found"
     state.status = "approved" if approve else "rejected"
-    BUS.send("lead", state.sender,
+    BUS.send("boss", state.sender,
              feedback or ("Approved" if approve else "Rejected"),
              "plan_approval_response",
              {"request_id": request_id, "approve": approve})
@@ -427,7 +556,7 @@ def run_team_info(team_name: str) -> str:
     Combines the saved entry from agents_config.json (leader/members config,
     lifecycle, spawn mode, …) with runtime state from _team_leaders /
     active_teammates (which leader is registered, which teammates are alive).
-    Used by the main-loop `team_info` tool so the lead can inspect a team it
+    Used by the main-loop `team_info` tool so the boss can inspect a team it
     started (or a saved team it hasn't) without messaging anyone."""
     from agent_core.agents import get_team, list_team_names
 
@@ -488,6 +617,42 @@ def start_team(team_name: str, task: str = "") -> str:
     from agent_core.agents import get_team, list_team_names, get_agent
     from agent_core.worktrees import create_worktree, _worktrees_dir
     from agent_core.tools import LEADER_TOOL_NAMES, MEMBER_TOOL_NAMES
+    from agent_core.mcp import get_current_session
+
+    # The boss session is the gateway chat session running this tool call.
+    # Thread it into every teammate so they can emit team.* events to the
+    # frontend TeamArea. None in CLI mode (emits become no-ops).
+    boss_session = get_current_session()
+    _team_boss_sessions[team_name] = boss_session
+
+    # Register a bus tap so every team conversation message (member↔leader,
+    # leader→boss, main-loop→leader) is bridged to the frontend group chat
+    # (GroupChatDetail) with the parseTeamEventMessage-compatible shape.
+    from agent_core.bus import register_bus_tap
+
+    def _bus_tap(frm, to, content_t, mtype, meta):
+        # Only surface substantive conversation; skip protocol control noise.
+        if mtype not in ("message", "result", "plan_approval_request"):
+            return
+        mid = (meta or {}).get("request_id") or (
+            f"bus_{int(time.time() * 1000)}_{frm}_{to}")
+        # Pass the FLAT event dict — _emit_team already wraps it in
+        # {"event": event_obj}. Wrapping here too double-nests the payload
+        # ({"event": {"event": {...}}}) and the frontend's parseTeamEventMessage
+        # reads payload.event, getting {"event":{...}} instead of the inner event,
+        # so type/from_member/content come out empty and the group chat bubble
+        # renders blank (member messages "don't display"). Match team_member/
+        # team_task callers, which pass a flat dict.
+        _emit_team(boss_session, "team_message", {
+            "type": "team.message.p2p",
+            "from_member": frm,
+            "to_member": to,
+            "content": str(content_t)[:1000],
+            "message_id": mid,
+            "timestamp": int(time.time() * 1000),
+        })
+
+    register_bus_tap(str(session_dir()), _bus_tap)
 
     team = get_team(team_name)
     if team is None:
@@ -520,6 +685,16 @@ def start_team(team_name: str, task: str = "") -> str:
 
     # Register the leader so the main loop's send_to_leader tool can address it.
     _team_leaders[team_name] = leader_name
+
+    # Surface the overall team task to the frontend TeamArea.
+    _emit_team(boss_session, "team_task", {
+        "type": "task.created",
+        "task_id": f"{team_name}-root",
+        "team_name": team_name,
+        "title": task or "(no task)",
+        "status": "in_progress",
+        "timestamp": _now_ms(),
+    })
 
     # ── Spawn members first (so the leader's roster is real when it starts) ──
     member_roster = []
@@ -568,6 +743,8 @@ def start_team(team_name: str, task: str = "") -> str:
             model=agent_model, tool_names=MEMBER_TOOL_NAMES,
             persona=persona or None, display_name=dname or None,
             overseer=leader_name,
+            boss_session=boss_session, team_name=team_name,
+            member_mode="member",
         )
         member_roster.append((mname, dname or mname, wt_path))
 
@@ -594,8 +771,8 @@ def start_team(team_name: str, task: str = "") -> str:
     leader_parts.append(
         "Coordinate your members via send_message / request_plan / review_plan / "
         "request_shutdown. When you have an overall plan, submit it via submit_plan "
-        "for the lead to approve (验收). Report final results to the lead via "
-        f"send_message(to=\"lead\", ...). Members: \n" + "\n".join(roster_lines))
+        "for the boss to approve (验收). Report final results to the boss via "
+        f"send_message(to=\"boss\", ...). Members: \n" + "\n".join(roster_lines))
     leader_parts.append(
         "CRITICAL — async messaging discipline:\n"
         "- send_message is ASYNCHRONOUS: it returns 'Sent to <name>' immediately, "
@@ -608,12 +785,12 @@ def start_team(team_name: str, task: str = "") -> str:
         "send_message tool_result alone — that only means it was delivered, not "
         "that the member saw it. A member is unreachable only after you have ended "
         "your turn and idle_poll timed out (60s) with no reply.\n"
-        "- Do NOT send a report to the lead about a member's status in the same "
+        "- Do NOT send a report to the boss about a member's status in the same "
         "turn you first message that member — wait for the reply first.\n"
         "- Task IDs: call create_task to mint an ID and use the returned ID; NEVER "
         "invent IDs like 'DEBUG-001'. complete_task only accepts IDs from create_task.\n"
         "- review_plan approves a MEMBER's submitted plan (pass the request_id the "
-        "member's submit_plan returned). Never review_plan your own plan — the lead "
+        "member's submit_plan returned). Never review_plan your own plan — the boss "
         "reviews yours.")
     if leader_persona:
         leader_parts.append(f"Persona: {leader_persona}")
@@ -624,7 +801,9 @@ def start_team(team_name: str, task: str = "") -> str:
         agent_key=leader_akey or None, worktree=leader_wt,
         model=leader_model, tool_names=LEADER_TOOL_NAMES,
         persona=leader_persona or None, display_name=leader_dname or None,
-        overseer="lead",
+        overseer="boss",
+        boss_session=boss_session, team_name=team_name,
+        member_mode="leader",
     )
 
     summary_lines = [f"Team {team_name!r} launched (3-tier)."]

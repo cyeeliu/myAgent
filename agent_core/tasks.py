@@ -93,6 +93,29 @@ class Task:
 def _task_path(task_id: str) -> Path:
     return _tasks_dir() / f"{task_id}.json"
 
+def _maybe_emit_team_task(task, event_type: str) -> None:
+    """In cluster mode, surface task lifecycle to the frontend TeamArea.
+    No-op outside team_mode (and in CLI, where the session has no team sinks)."""
+    try:
+        from agent_core.mcp import get_current_session
+        s = get_current_session()
+        if s is None or not s.context.get("team_mode"):
+            return
+        team_mode = s.context.get("team_mode")
+        team_name = team_mode if isinstance(team_mode, str) else ""
+        s.emit("team_task", {"event": {
+            "type": event_type,
+            "task_id": task.id,
+            "team_name": team_name,
+            "title": task.subject,
+            "status": task.status,
+            "assignee": task.owner,
+            "timestamp": int(time.time() * 1000),
+        }})
+    except Exception:
+        pass
+
+
 def create_task(subject: str, description: str = "",
                 blockedBy: list[str] | None = None) -> Task:
     task = Task(
@@ -102,6 +125,7 @@ def create_task(subject: str, description: str = "",
         blockedBy=blockedBy or [],
     )
     save_task(task)
+    _maybe_emit_team_task(task, "task.created")
     return task
 
 def save_task(task: Task):
@@ -154,6 +178,7 @@ def complete_task(task_id: str) -> str:
         return f"Task {task_id} is {task.status}, cannot complete"
     task.status = "completed"
     save_task(task)
+    _maybe_emit_team_task(task, "task.completed")
     unblocked = [t.subject for t in list_tasks()
                  if t.status == "pending" and t.blockedBy and can_start(t.id)]
     print(f"  \033[32m[complete] {task.subject} ✓\033[0m")

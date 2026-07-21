@@ -7,12 +7,12 @@ categorized wake signal arrives:
 
   - "user"       — a new user message posted while the agent was waiting
                    (agent_gateway.sessions.post_message → wake).
-  - "team"       — a teammate/leader wrote to the lead mailbox
-                   (agent_core.bus.MessageBus.send → lead listener → wake).
+  - "team"       — a teammate/leader wrote to the boss mailbox
+                   (agent_core.bus.MessageBus.send → boss listener → wake).
   - "background" — a background task finished (agent_core.background._notify → wake).
 
 The wake is just a *poke*: the actual data for each source stays queued in its
-own store (lead mailbox / background_results / pending user message), so a lost
+own store (boss mailbox / background_results / pending user message), so a lost
 poke can't lose data — the next check_inbox / inject_background_notifications /
 fresh turn picks it up. Wakes for sources the waiter didn't ask for are dropped
 (the poke is cleared) and the wait continues; the underlying data is still

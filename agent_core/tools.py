@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import re
 import socket
-from agent_core.bus import BUS, consume_lead_inbox
+from agent_core.bus import BUS, consume_boss_inbox
 from agent_core.cron import run_cancel_cron, run_list_crons, run_schedule_cron
 from agent_core.env import workdir
 # connect_mcp imported lazily inside run_connect_mcp to avoid a tools<->mcp
@@ -612,7 +612,7 @@ def run_start_team(team_name: str, task: str = "") -> str:
     return start_team(team_name, task)
 
 def run_send_message(to: str, content: str) -> str:
-    BUS.send("lead", to, content)
+    BUS.send("boss", to, content)
     return f"Sent to {to}"
 
 def run_send_to_leader(team_name: str, content: str) -> str:
@@ -624,13 +624,16 @@ def run_send_to_leader(team_name: str, content: str) -> str:
     leader = _team_leaders.get(team_name)
     if not leader:
         return f"No active leader for team {team_name!r}"
-    BUS.send("lead", leader, content)
+    BUS.send("boss", leader, content)
     return f"Sent to leader {leader} of team {team_name!r}"
 
 def run_check_inbox() -> str:
-    msgs = consume_lead_inbox(route_protocol=True)
+    msgs = consume_boss_inbox(route_protocol=True)
     if not msgs:
         return "(inbox empty)"
+    # Team conversation messages are bridged to the frontend group chat by the
+    # bus tap registered in start_team (teammates.py), which fires at BUS.send
+    # time for every team message. Nothing to emit here.
     lines = []
     for m in msgs:
         meta = m.get("metadata", {})
@@ -652,8 +655,8 @@ def run_wait(sources: list = None, timeout: int = 300) -> str:
     import time as _time
     from agent_core.mcp import get_current_session
     from agent_core.env import session_dir
-    from agent_core.bus import (BUS, register_lead_listener,
-                                unregister_lead_listener)
+    from agent_core.bus import (BUS, register_boss_listener,
+                                unregister_boss_listener)
     s = get_current_session()
     wl = getattr(s, "wait_lock", None) if s is not None else None
     if wl is None:
@@ -668,18 +671,18 @@ def run_wait(sources: list = None, timeout: int = 300) -> str:
     # The listener just pokes the wait_lock; the mailbox line is already written
     # by BUS.send, so check_inbox will find the data after we wake.
     if "team" in srcs:
-        register_lead_listener(
+        register_boss_listener(
             sd, lambda content, mtype: wl.wake(
                 "team", f"{mtype}: {str(content)[:80]}"))
     try:
         # Race guard: a team message may have arrived between the agent's last
         # check_inbox and this wait. If so, don't block — return immediately so
         # the agent calls check_inbox and drains it.
-        if "team" in srcs and BUS.has_inbox("lead"):
+        if "team" in srcs and BUS.has_inbox("boss"):
             return "Woken by team: (pending inbox — call check_inbox)"
         reason = wl.wait(srcs, timeout_s)
     finally:
-        unregister_lead_listener(sd)
+        unregister_boss_listener(sd)
     src = reason.get("source", "timeout")
     detail = reason.get("detail", "")
     if src == "timeout":
@@ -1018,14 +1021,14 @@ TEAMMATE_TOOL_NAMES = MEMBER_TOOL_NAMES
 # schema via teammate_tool_schemas.
 SUBMIT_PLAN_TOOL = {
     "name": "submit_plan",
-    "description": "Submit a plan for approval to your overseer (leader or lead).",
+    "description": "Submit a plan for approval to your overseer (leader or boss).",
     "input_schema": {"type": "object",
                      "properties": {"plan": {"type": "string"}},
                      "required": ["plan"]},
 }
 SEND_MESSAGE_TOOL = {
     "name": "send_message",
-    "description": "Send a message to a peer (a teammate, your leader, or \"lead\").",
+    "description": "Send a message to a peer (a teammate, your leader, or \"boss\").",
     "input_schema": {"type": "object",
                      "properties": {"to": {"type": "string"},
                                     "content": {"type": "string"}},

@@ -392,8 +392,15 @@ class GatewaySession:
         try:
             if self.agent.workdir is not None:
                 code.set_workdir(self.agent.workdir)
-            with self.agent.lock:
-                code.agent_loop(self.agent)
+            # NOTE: do NOT hold self.agent.lock around agent_loop. post_message
+            # already serializes turns via _worker_lock + _worker (one worker per
+            # session), and teammate threads spawned by start_team call
+            # boss_session.emit() — which acquires session.lock — to surface
+            # team.member/team.message events. Holding the lock for the whole
+            # loop deadlocks them: the boss's `wait` blocks for teammate replies
+            # while the teammates block on the lock the boss's turn holds, so the
+            # wait times out and the boss reports "leader not responding".
+            code.agent_loop(self.agent)
         except Exception as e:  # never let the worker die silently
             debug("turn CRASH sid=%r err=%s: %s", self.session_id, type(e).__name__, e)
             try:
@@ -444,6 +451,18 @@ class GatewaySession:
 
     def interrupt(self):
         self.agent.interrupted = True
+        # If the turn is blocked in the `wait` tool, poke its WaitLock so the
+        # blocked wl.wait() returns immediately instead of running to its
+        # timeout. Without this, setting `interrupted` alone can't break a
+        # Condition.wait, and a boss stuck in `wait` (common in cluster mode)
+        # won't notice the interrupt until the wait times out (up to 3600s).
+        wl = getattr(self.agent, "wait_lock", None)
+        waiting = wl is not None and wl.is_waiting()
+        if waiting:
+            wl.wake("user", "interrupt")
+        debug("interrupt sid=%r waiting=%s worker_alive=%s",
+              self.session_id, waiting,
+              self._worker.is_alive() if self._worker else False)
 
     def _on_background_complete(self):
         """Called by a background task's worker thread when it finishes.

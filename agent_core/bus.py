@@ -9,23 +9,41 @@ from agent_core.env import session_dir, terminal_print
 def _mailbox_dir():
     return session_dir() / ".mailboxes"
 
-# Lead wait-lock listeners, keyed by str(session_dir()). When a teammate/leader
-# writes to the "lead" mailbox, the matching listener (registered by the main
+# Boss wait-lock listeners, keyed by str(session_dir()). When a teammate/leader
+# writes to the "boss" mailbox, the matching listener (registered by the main
 # loop's `wait` tool) pokes the session's WaitLock so a blocked agent resumes
 # immediately instead of waiting for the timeout. The teammate thread runs with
-# the lead's session_dir() restored (spawn_teammate_thread captures/restores it),
-# so the key computed in MessageBus.send matches the one the lead registered.
-_lead_listeners: dict[str, object] = {}
+# the boss's session_dir() restored (spawn_teammate_thread captures/restores it),
+# so the key computed in MessageBus.send matches the one the boss registered.
+_boss_listeners: dict[str, object] = {}
 
 
-def register_lead_listener(session_path, cb):
+def register_boss_listener(session_path, cb):
     """Register a callback(content, msg_type) poked when a message is sent to
-    the "lead" mailbox under session_path (= session_dir())."""
-    _lead_listeners[str(session_path)] = cb
+    the "boss" mailbox under session_path (= session_dir())."""
+    _boss_listeners[str(session_path)] = cb
 
 
-def unregister_lead_listener(session_path):
-    _lead_listeners.pop(str(session_path), None)
+def unregister_boss_listener(session_path):
+    _boss_listeners.pop(str(session_path), None)
+
+
+# Bus taps, keyed by str(session_dir()). A tap is invoked after EVERY MessageBus
+# send under that session_path with (from, to, content, msg_type, metadata) so a
+# watcher (e.g. start_team in cluster mode) can bridge team conversation to the
+# frontend group chat. Teammate threads run with the boss's session_dir()
+# restored, so the key computed in send matches the one start_team registered.
+_bus_taps: dict[str, object] = {}
+
+
+def register_bus_tap(session_path, cb):
+    """Register a callback(from, to, content, msg_type, metadata) invoked after
+    every BUS send under session_path (= session_dir())."""
+    _bus_taps[str(session_path)] = cb
+
+
+def unregister_bus_tap(session_path):
+    _bus_taps.pop(str(session_path), None)
 
 
 class MessageBus:
@@ -40,17 +58,26 @@ class MessageBus:
             f.write(json.dumps(msg) + "\n")
         terminal_print(f"  \033[33m[bus] {from_agent} → {to_agent}: "
                        f"({msg_type}) {content[:50]}\033[0m")
-        # Poke a waiting lead so its `wait` tool resumes instantly. The mailbox
+        # Poke a waiting boss so its `wait` tool resumes instantly. The mailbox
         # line is already written, so even if there's no listener the next
         # check_inbox will find it — this is just a latency optimization + a
         # way to unblock a wait that has no timeout-pressure.
-        if to_agent == "lead":
-            cb = _lead_listeners.get(str(mdir.parent))
+        if to_agent == "boss":
+            cb = _boss_listeners.get(str(mdir.parent))
             if cb is not None:
                 try:
                     cb(content, msg_type)
                 except Exception:
                     pass
+        # Bridge team conversation to the frontend group chat (cluster mode).
+        # The tap is registered by start_team; it emits a team_message event
+        # for substantive messages (filtered inside the tap). Best-effort.
+        tap = _bus_taps.get(str(mdir.parent))
+        if tap is not None:
+            try:
+                tap(from_agent, to_agent, content, msg_type, metadata or {})
+            except Exception:
+                pass
 
     def read_inbox(self, agent: str) -> list[dict]:
         inbox = _mailbox_dir() / f"{agent}.jsonl"
@@ -101,8 +128,8 @@ def match_response(response_type: str, request_id: str, approve: bool):
         return
     state.status = "approved" if approve else "rejected"
 
-def consume_lead_inbox(route_protocol=True) -> list[dict]:
-    msgs = BUS.read_inbox("lead")
+def consume_boss_inbox(route_protocol=True) -> list[dict]:
+    msgs = BUS.read_inbox("boss")
     if route_protocol:
         for msg in msgs:
             meta = msg.get("metadata", {})

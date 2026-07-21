@@ -8,7 +8,8 @@ from agent_core.waitlock import WaitLock
 
 EVENT_KINDS = ("token", "text", "tool_start", "tool_result",
                "error", "permission_request", "ask_user", "widget", "compacted",
-               "done", "context_usage", "task_notification", "memory", "todo")
+               "done", "context_usage", "task_notification", "memory", "todo",
+               "team_member", "team_task", "team_event", "team_message")
 
 class EventSink:
     """Protocol: emit(kind, payload). Subclasses render or buffer the event."""

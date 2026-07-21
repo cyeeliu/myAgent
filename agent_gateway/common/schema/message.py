@@ -43,6 +43,11 @@ class ReqMethod(str, Enum):
     MODELS_LIST = "models.list"
     MODELS_REPLACE_ALL = "models.replace_all"
 
+    # ── permissions (security panel: per-tool allow/ask/deny) ──
+    PERMISSIONS_TOOLS_GET = "permissions.tools.get"
+    PERMISSIONS_TOOLS_UPDATE = "permissions.tools.update"
+    PERMISSIONS_TOOLS_DELETE = "permissions.tools.delete"
+
     # ── skills ──
     SKILLS_LIST = "skills.list"
     SKILLS_INSTALLED = "skills.installed"

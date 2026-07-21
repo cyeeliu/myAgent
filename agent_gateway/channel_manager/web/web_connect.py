@@ -346,7 +346,11 @@ class WebChannel(BaseChannel):
                     # and the next turn's deltas append to this turn's bubble. Our
                     # done payload carries no content (the streamed buffer already
                     # holds it), so this only flips isStreaming=false.
-                    if ev.get("event") == "chat.final":
+                    # team.* events get the same tag so shouldHandleSessionEvent
+                    # routes them to the correct session's TeamArea in multi-tab.
+                    if ev.get("event") in ("chat.final", "team.member",
+                                           "team.task", "team.event",
+                                           "team.message"):
                         ev["payload"] = {**ev.get("payload", {}),
                                          "session_id": sid}
                     await outbound_sub(ev)

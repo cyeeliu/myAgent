@@ -129,20 +129,6 @@ function getExecutionKindLabel(kind: ProcessItem['kind'], t: Translate): string 
   return t('team.process.execution.event');
 }
 
-function normalizeMemberKey(value: string): string {
-  return value.trim().toLowerCase().replace(/[\s_-]+/g, '');
-}
-
-function isLeaderMember(member: TeamMember, leaderIds: string[]): boolean {
-  const memberKeys = [member.member_id, member.name || ''].map(normalizeMemberKey);
-  return (
-    isTeamLeaderMember(member.member_id) ||
-    member.mode === 'leader' ||
-    member.mode === 'team_leader' ||
-    leaderIds.some((leaderId) => memberKeys.includes(normalizeMemberKey(leaderId)))
-  );
-}
-
 function formatRawValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '-';
   if (typeof value === 'string') return value;
@@ -202,14 +188,20 @@ export function TeamMembersPanel({
 }: TeamMembersPanelProps) {
   const { t } = useTranslation();
   const { messages } = useChatStore();
-  const { teamLeaderMemberIds } = useSessionStore();
   const groupMessages = useMemo(
     () => buildGroupMessageItems(historyMessages, messages),
     [historyMessages, messages],
   );
+  // Show every spawned teammate in the members list — including the team leader.
+  // Previously the leader was filtered out via isLeaderMember(...) and nothing
+  // else rendered it in the members tab, so the list showed only non-leader
+  // members ("显示不全"). The leader carries mode:"leader" and MemberListItem
+  // surfaces that as a "Running mode: leader" label, so it's distinguishable
+  // without being hidden. Leader is prepended last in the store, so it sits at
+  // the top naturally.
   const visibleMembers = useMemo(
-    () => members.filter((member) => !isLeaderMember(member, teamLeaderMemberIds)),
-    [members, teamLeaderMemberIds],
+    () => members,
+    [members],
   );
   const visibleSelectedMember = useMemo(
     () => visibleMembers.find((member) => member.member_id === (selectedMember?.member_id || selectedMemberId)) || visibleMembers[0] || null,
