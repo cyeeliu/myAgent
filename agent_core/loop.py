@@ -15,7 +15,7 @@ from agent_core.env import AUTO_COMPACT_WINDOW, CONTINUATION_PROMPT, DEFAULT_MAX
 from agent_core.hooks import check_permission, trigger_hooks
 from agent_core.mcp import assemble_tool_pool, set_current_session
 from agent_core.memory import consolidate_memories, extract_memories, load_memories, read_memory_index
-from agent_core.prompt import assemble_system_prompt
+from agent_core.prompt import assemble_system_prompt, invalidate_section_cache
 from agent_core.recovery import RecoveryState, is_prompt_too_long_error, with_retry
 from agent_core.session import Session
 from agent_core.tasks import has_active_todos
@@ -24,7 +24,7 @@ from agent_core.tools import call_tool_handler
 
 def call_llm(messages: list, context: dict, tools: list,
              state: RecoveryState, max_tokens: int, events=None, stream: bool = False):
-    system = assemble_system_prompt(context)
+    system = assemble_system_prompt(context, tools, messages)
     # Report pre-call context-window usage (system + messages + tools, in tokens)
     # to the ToolPanel status card. The adapter emits further updates during
     # streaming so the stat tracks the growing response.
@@ -209,6 +209,10 @@ def agent_loop(session: Session):
 
             if block.name == "compact":
                 messages[:] = compact_history(messages)
+                # /compact clears the section cache (parity with Claude Code's
+                # STATE.systemPromptSectionCache). The mtime/signature keys
+                # already auto-invalidate; this is belt-and-suspenders.
+                invalidate_section_cache()
                 # Internal marker — LLM only, not the chat record / live chat.
                 session.append_context({"role": "user",
                                         "content": "[Compacted. Continue with summarized context.]"})

@@ -49,6 +49,10 @@ def get_config() -> dict:
             "base_url": f.get("base_url") or os.getenv("OPENAI_BASE_URL"),
             "api_key": f.get("api_key") or os.getenv("OPENAI_API_KEY", "dummy"),
             "fallback_model": f.get("fallback_model") or os.getenv("FALLBACK_MODEL_ID"),
+            # Output language/style drive prompt directives (agent_core.prompt).
+            # Optional — unset → no directive, the model autodetects.
+            "language": f.get("language") or os.getenv("OUTPUT_LANGUAGE"),
+            "output_style": f.get("output_style") or os.getenv("OUTPUT_STYLE"),
         }
         _cache["mtime"] = m
         _cache["config"] = cfg

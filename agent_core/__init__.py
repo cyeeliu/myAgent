@@ -244,7 +244,9 @@ from agent_core.memory import (
 )
 from agent_core.prompt import (
     PROMPT_SECTIONS,
+    SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     assemble_system_prompt,
+    invalidate_section_cache,
 )
 from agent_core.cron import (
     CronJob,
@@ -366,6 +368,7 @@ __all__ = [
     'PRIMARY_MODEL',
     'PROMPT',
     'PROMPT_SECTIONS',
+    'SYSTEM_PROMPT_DYNAMIC_BOUNDARY',
     'Permission',
     'PERMISSION_LEVELS',
     'ProtocolState',
@@ -397,6 +400,7 @@ __all__ = [
     'agent_loop',
     'ask_on_overwrite',
     'assemble_system_prompt',
+    'invalidate_section_cache',
     'assemble_tool_pool',
     'background_lock',
     'background_results',

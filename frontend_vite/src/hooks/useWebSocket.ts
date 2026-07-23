@@ -1617,6 +1617,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return;
         }
         finishContextCompressionTurn();
+        // 关闭残留的 ask-user/permission modal：若轮次已结束（chat.final）而问题仍
+        // pending，说明它已被后端在无前端参与下解决（如权限 120s 超时自动拒绝），
+        // modal 已 stale。正常点击流中 doSubmit 已先关 modal，此处为 no-op。
+        setPendingQuestion(null);
         // Defensive: chat.final is the definitive end-of-response marker.
         // The primary transition is driven by chat.processing_status
         // (is_processing=false), but if that frame is lost the UI would be stuck
