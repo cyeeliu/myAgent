@@ -40,8 +40,8 @@ interface GroupMessage {
 
 const SHARE_IMAGE_WIDTH = 750;
 const SHARE_IMAGE_PIXEL_RATIO = 3;
-const OPENJIUWEN_WEBSITE_URL = 'https://openjiuwen.com';
-const JIUWENSWARM_REPO_URL = 'https://gitcode.com/openJiuwen/jiuwenswarm';
+const MYAGENT_WEBSITE_URL = 'https://myagent.com';
+const MYAGENT_REPO_URL = 'https://gitcode.com/myAgent/myagent';
 const TRANSPARENT_IMAGE_DATA_URL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -179,7 +179,7 @@ export const ShareImageDocument = forwardRef<HTMLDivElement, ShareImageDocumentP
           <div className="share-image-masthead">
             <div className="share-image-brand">
               <img src="/logo.svg" alt="" className="share-image-brand__logo" />
-              <div className="share-image-brand__name">JiuwenSwarm</div>
+              <div className="share-image-brand__name">MyAgent</div>
             </div>
           </div>
         </header>
@@ -227,11 +227,11 @@ export const ShareImageDocument = forwardRef<HTMLDivElement, ShareImageDocumentP
           <div className="share-image-footer__note">{t('share.generatedBy')}</div>
           <div className="share-image-links">
             <div className="share-image-link">
-              <span>{t('share.website', { url: OPENJIUWEN_WEBSITE_URL })}</span>
+              <span>{t('share.website', { url: MYAGENT_WEBSITE_URL })}</span>
             </div>
             <div className="share-image-link-divider" />
             <div className="share-image-link">
-              <span>{t('share.repository', { url: JIUWENSWARM_REPO_URL })}</span>
+              <span>{t('share.repository', { url: MYAGENT_REPO_URL })}</span>
             </div>
           </div>
         </footer>

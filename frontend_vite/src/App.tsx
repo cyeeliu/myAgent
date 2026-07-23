@@ -175,7 +175,7 @@ function ErrorFallback({ error }: { error: Error | null }) {
 
 
 // 会话 ID 持久化（使用 sessionStorage：同标签页刷新保留，多标签页隔离）
-const SESSION_STORAGE_KEY = 'openjiuwen_current_session';
+const SESSION_STORAGE_KEY = 'myagent_current_session';
 
 function generateSessionId(): string {
   const ts = Date.now().toString(16);
@@ -317,7 +317,7 @@ function AppContent() {
   const historyRestoreHandleRef = useRef<HistoryRestoreHandle | null>(null);
   const historyPageHandleRef = useRef<HistoryRestoreHandle | null>(null);
   const shareExportRef = useRef<HTMLDivElement>(null);
-  const shareExportFilenameRef = useRef('jiuwenswarm-share.png');
+  const shareExportFilenameRef = useRef('myagent-share.png');
   const shareExportTokenRef = useRef(0);
   /** 为 true 表示刚从「会话列表」恢复；history 为空时在 useEffect 的 onEmpty 中提示一次 */
   const historyRestoreFromPanelHintRef = useRef(false);
@@ -1470,7 +1470,7 @@ function AppContent() {
       if (!payload.snapshot) {
         throw new Error('missing_snapshot');
       }
-      shareExportFilenameRef.current = payload.filename || payload.snapshot.metadata?.filename || 'jiuwenswarm-share.png';
+      shareExportFilenameRef.current = payload.filename || payload.snapshot.metadata?.filename || 'myagent-share.png';
       setShareExportSnapshot(payload.snapshot);
     } catch (error) {
       console.error('Failed to export share image:', error);
@@ -1541,9 +1541,9 @@ function AppContent() {
           <div className="card mb-4">
             <div className="text-sm text-text-muted">
               {configError}. {t('app.configErrorHint')}
-              <span className="mono"> python -m tests.web_gateway_jiuwenclaw_integration </span>
+              <span className="mono"> python -m tests.web_gateway_myagent_integration </span>
               {t('app.configErrorDefault')}
-              <span className="mono"> jiuwenswarm/channels/web/frontend/.env.local </span>
+              <span className="mono"> myagent/channels/web/frontend/.env.local </span>
               {t('app.configErrorEnv')} <span className="mono">VITE_API_BASE</span> {t('common.and')} <span className="mono">VITE_WS_BASE</span>.
             </div>
           </div>

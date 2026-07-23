@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { TabType, TeamDetailTab } from '../components/teamArea/shared';
 
-const TEAM_PANEL_STATE_KEY = 'jiuwenclaw_team_panel_state';
-const TEAM_PANEL_STATE_EVENT = 'jiuwenclaw-team-panel-state-change';
+const TEAM_PANEL_STATE_KEY = 'myagent_team_panel_state';
+const TEAM_PANEL_STATE_EVENT = 'myagent-team-panel-state-change';
 
 export interface TeamPanelState {
   expanded: boolean;

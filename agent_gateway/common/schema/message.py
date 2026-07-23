@@ -1,4 +1,4 @@
-"""Unified message model + RPC method enum (mirrors jiuwenswarm common/schema/message).
+"""Unified message model + RPC method enum (mirrors myagent common/schema/message).
 
 `ReqMethod` enumerates every method the WebChannel exposes over the method-routed
 WS (`{type:'req', id, method, params}`). The frontend webClient dispatches by
@@ -11,7 +11,7 @@ from typing import Any, Literal, Optional
 
 
 class Mode(str, Enum):
-    """Agent execution mode (mirrors jiuwenswarm AgentMode, mapped to agent_core)."""
+    """Agent execution mode (mirrors myagent AgentMode, mapped to agent_core)."""
     PLAN = "agent.plan"        # default — plan then act
     FAST = "agent.fast"        # skip plan, act directly
     TEAM = "team"              # multi-teammate swarm
@@ -56,6 +56,7 @@ class ReqMethod(str, Enum):
     SKILLS_UNINSTALL = "skills.uninstall"
     SKILLS_INSTALL = "skills.install"
     SKILLS_IMPORT_LOCAL = "skills.import_local"
+    SKILLS_IMPORT_UPLOAD = "skills.import_upload"
     SKILLS_MARKETPLACE_LIST = "skills.marketplace.list"
     # Online marketplaces (backed by agent_gateway/skill_marketplaces.py).
     SKILLS_SKILLNET_SEARCH = "skills.skillnet.search"

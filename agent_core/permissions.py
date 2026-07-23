@@ -32,7 +32,7 @@ _SEED = {
     "ask_on_overwrite": True,
     "enabled": True,
     "memory_forbidden": {"enabled": False, "pattern": ""},
-    "tools": {"bash": "ask", "write_file": "ask", "edit_file": "ask"},
+    "tools": {"bash": "ask", "write_file": "ask", "edit_file": "ask", "download_skill": "ask"},
 }
 
 _lock = threading.Lock()

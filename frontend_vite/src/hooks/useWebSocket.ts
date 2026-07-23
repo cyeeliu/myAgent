@@ -44,7 +44,7 @@ import {
   normalizeToolResultPayload,
 } from '../features/tool-events/toolEventNormalizer';
 
-const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
+const WS_RECONNECT_EVENT = 'myagent:ws-reconnect-request';
 
 function isCompletedResumeResult(interruptResult: unknown): boolean {
   if (!interruptResult || typeof interruptResult !== 'object') {

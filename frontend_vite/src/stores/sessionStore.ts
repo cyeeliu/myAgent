@@ -14,9 +14,9 @@ import {
   TeamMemberContextCompressionState,
 } from '../types';
 
-const STORAGE_KEY = 'jiuwenclaw_context_compression';
-const MODE_STORAGE_KEY = 'jiuwenclaw_mode';
-const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
+const STORAGE_KEY = 'myagent_context_compression';
+const MODE_STORAGE_KEY = 'myagent_mode';
+const MODEL_STORAGE_KEY = 'myagent_selected_model';
 
 function loadFromStorage() {
   try {

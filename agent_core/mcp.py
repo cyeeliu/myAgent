@@ -273,7 +273,7 @@ def assemble_tool_pool(context: dict | None = None) -> tuple[list[dict], dict]:
 _PLAN_MODE_ALLOWED = {
     "read_file", "glob", "grep", "list_dir", "bash",
     "web_fetch", "web_search", "todo_write",
-    "load_skill", "compact", "show_widget",
+    "load_skill", "search_skill", "compact", "show_widget",
     "list_tasks", "get_task", "list_crons",
     "task_list", "task_output",
     "exit_plan_mode",

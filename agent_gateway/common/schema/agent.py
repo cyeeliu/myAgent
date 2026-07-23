@@ -1,4 +1,4 @@
-"""Agent request/response models (mirrors jiuwenswarm common/schema/agent).
+"""Agent request/response models (mirrors myagent common/schema/agent).
 
 `AgentRequest` is the normalized form every channel request becomes after e2a
 normalization; `agent_compat.execute` turns it into an in-process agent_core

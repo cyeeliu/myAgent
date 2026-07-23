@@ -95,7 +95,7 @@ prompt → cron → tools → context → loop → cli
 - `sessions.py` — `SessionManager` + `GatewaySession`，一会话一 worker 线程跑 `agent_loop`；`_run_turn` finally 持久化 chat_record + llm_context + ctx 快照；`synthesize_frames(record)` 从 append-only record 重建 token 级 replay 帧；`_build` 从 Postgres 按需 hydrate，收 `mode` 参数恢复 plan_mode。
 - `pipe.py` — 三管道各带 Redis + 内存实现：`EventPipe`（token 级，24h）、`ChatStreamPipe`（消息级 record）、`ContextStore`（LLM context 快照）。
 - `db.py` — psycopg3 连接池，`sessions` 表 `chat_record JSONB` + `llm_context JSONB` 双列（带 `history`→`chat_record` 迁移）；`DATABASE_URL` 不设降级 no-op。
-- `gateway_push/wire.py` — agent 事件 → jiuwenswarm 点点事件（`token→chat.delta`、`tool_start→chat.tool_call`、`tool_result→chat.tool_result`、`done→chat.final{}`、`user→chat.user`、`error→chat.error`）。`done` payload 故意是 `{}`，文本走 `chat.delta`。
+- `gateway_push/wire.py` — agent 事件 → myagent 点点事件（`token→chat.delta`、`tool_start→chat.tool_call`、`tool_result→chat.tool_result`、`done→chat.final{}`、`user→chat.user`、`error→chat.error`）。`done` payload 故意是 `{}`，文本走 `chat.delta`。
 - `common/e2a/agent_compat.py` — ~30 个 WS method 派发；`web_connect.py` accept 即发 `connection.ack`，首个 `chat.send` 绑事件 drain。
 - `main.py` file-api — `/file-api/list-files`、`/file-api/file-content?encoding=auto`（utf-8→gbk→…→latin-1 嗅探，不 500）、`/file-api/rebuild-agent-data` 写 `agent-data.json` + 种 skills/.memory。
 
@@ -103,6 +103,100 @@ prompt → cron → tools → context → loop → cli
 
 - React + Vite + Tailwind，nginx 出静态 dist。`useWebSocket.ts` 是事件→store reducer；`AgentPanel` 走 `/file-api/rebuild-agent-data`；`historyRestore.ts` 解析 `history.json`（assistant 记录需 `event_type` + 字符串 `content` 否则丢）；`featureFlags.ts` 隐藏无后端的面板。
 - `nginx.conf` — `:80` 唯一入口，`/api/` → gateway:8000（WS upgrade、`proxy_buffering off`、1h 超时），`/` → frontend:3000。
+
+---
+
+## 🔄 一轮对话交互流程
+
+一轮对话（用户发一句、agent 回完）的端到端时序。以「帮我写个函数」为例，分 7 个阶段 + 1 个中途权限子流程。所有引用均到 file:line。
+
+```
+浏览器 ──WS──▶ nginx :80 ──/api/──▶ gateway :8000 /ws ──▶ agent_core.agent_loop
+                                  ◀── event 流 (chat.delta/tool_call/tool_result/final)
+```
+
+### 阶段 0 — WS 建连 + ack
+
+- 浏览器 `new WebSocket(url)`（`frontend_vite/src/services/webClient.ts:139`），经 nginx `:80` `/api/` proxy 升级到 gateway `/ws`。
+- gateway `web_connect.py:81` 接受连接，立即发 `event {type:"event", event:"connection.ack", payload:{...}}`（`web_connect.py:108`）。前端在收到 ack 前不发任何 req。
+- 前端 `webClient.on('connection.ack', ...)`（`useWebSocket.ts:1517`）收到后才发 `config.get`/`session.list` 等。
+
+### 阶段 1 — 发送用户消息
+
+- 用户回车 → `ChatPanel.handleSendMessage`（`ChatPanel/index.tsx:318`）→ `onSendMessage` prop → `App.handleSendMessage`（`App.tsx:1179`）→ `sendMessage(content, sid, media)`（`useWebSocket.ts:909`）。
+- `sendMessage` 先 `addMessage({role:'user'})` 本地落用户气泡，`setProcessing(true)` + `setThinking(true)`，再 `request('chat.send', {...})`（`useWebSocket.ts:977`）。
+- `request`（`webClient.ts:245`）生成 `id`，存进 `pending` map，发出去的信封：
+  ```
+  {type:"req", id, method:"chat.send", params:{session_id, content, mode, model_name?}}
+  ```
+  （`webClient.ts:256-297`）
+
+### 阶段 2 — gateway 派发 chat.send
+
+- `agent_compat.py:42` `CHAT_SEND` 分支：`get_or_hydrate(sid)` 取/建 `GatewaySession`（DB 里没有则自愈新建）；按 `req.mode` 翻 context flag——`Mode.TEAM` 设 `team_mode`、`Mode.PLAN` 设 `plan_mode`（`agent_compat.py:96-114`）；`db.save_session_mode`；`gs.post_message(text)`（`agent_compat.py:122`）。
+- 同步回 `res {type:"res", id, ok:true, payload:{ok:true}}`（`agent_compat.py:128`）——前端 `pending.get(id).resolve`（`webClient.ts:408`）解掉 `request` 的 Promise。**注意**：这时 agent 还没开始跑，只是入队成功。
+
+### 阶段 3 — post_message 起 worker 线程
+
+- `post_message`（`sessions.py:347`）：
+  1. `append_both({role:'user', content:text})`（`sessions.py:375`）——同时进 `record`（只追加、永不压缩）和 `context_messages`（可压缩），并扇出到 `record_sinks` → Redis `chat:{sid}` stream。
+  2. `emit("user", {text})`（`sessions.py:379`）——落 `live:{sid}` EventPipe，供重连 `last_seq=0` 重放用户气泡。
+  3. `db.save_chat_record`（`sessions.py:381`）——立刻落库，中途崩溃不丢。
+  4. 起 daemon 线程跑 `_run_turn`（`sessions.py:383`），`_worker` 记一下保证一会话一 worker。
+
+### 阶段 4 — agent_loop 跑一轮
+
+- `_run_turn`（`sessions.py:390`）调 `code.agent_loop(self.agent)`（`sessions.py:409`）。
+- `agent_loop`（`agent_core/loop.py:53`）：
+  1. `load_memories` 选相关记忆进 `context["memories"]`（`loop.py:73-81`）。
+  2. 进 while 循环：`consume_cron_queue` + `inject_background_notifications`（`loop.py:92-98`）→ 每 3 轮 todo 提醒 → `prepare_context(messages)` 上下文预算（`loop.py:111`）→ `update_context` + `assemble_tool_pool(context)` 重建工具池（plan 模式裁只读，`loop.py:115`）→ `call_llm(messages, context, tools, state, ..., events=session, stream=True)`（`loop.py:119`）。
+  3. `call_llm` → `adapter.chat_create` 把 Anthropic 风格 content block 转 OpenAI 格式发出去（`adapter.py:21` `_to_openai_messages`）；流式 token 回来时逐个 `session.emit("token", {text})` 发射。
+  4. 收到完整 response 后 `append_both({role:'assistant', content: response.content})`（`loop.py:167`）。有 `tool_use` 就逐个执行（权限 gate → handler → `PostToolUse`），把 `tool_result` 再 `append_both` 进去，**继续循环**；没有 `tool_use` 就 `trigger_hooks("Stop")` + `emit("done", {})`（`loop.py:167-169`）退出。
+
+### 阶段 5 — 事件回流（agent → gateway → 浏览器）
+
+- agent_core `session.emit(kind, payload)` → `EventSink`（`sessions.py:262`）推进 `EventPipe` 的 `live:{sid}` Redis stream（`pipe.py`，24h TTL）。
+- gateway `_drain_session`（`web_connect.py:123`）把 EventPipe 帧取出 → `gateway_push/wire.py` 映射成 myagent 点点事件 → 包成 `{type:"event", event, payload, seq}` WS 帧发给前端。
+- **事件映射表**（`wire.py:17-27`）：
+
+  | agent_core 事件 | 前端事件 | payload |
+  |---|---|---|
+  | `token` | `chat.delta` | `{content}` |
+  | `tool_start` | `chat.tool_call` | `{id, name, arguments}` |
+  | `tool_result` | `chat.tool_result` | `{tool_call_id, tool_name, result, success}` |
+  | `done` | `chat.final` | `{}`（**故意空**，文本已在 delta 累加完） |
+  | `user` | `chat.user` | `{text}` |
+  | `error` | `chat.error` | `{error}` |
+  | `permission_request` | `chat.ask_user_question` | `{request_id, question, options:[Allow,Deny]}` |
+
+### 阶段 6 — 前端接收 + 渲染
+
+- `webClient.handleIncoming`（`webClient.ts:308`）按 `type` 分流：`res` → `resolvePending`（解对应 req 的 Promise）；`event` → `dispatchEvent`（按 `event` 名调 `on(...)` handler）。
+- `chat.delta`（`useWebSocket.ts:1523`）：把 `payload.content` 累加到进行中的 assistant 消息，流式渲染。
+- `chat.tool_call`（`useWebSocket.ts:1842`）：`normalizeToolCallPayload` → 渲染工具调用卡片。
+- `chat.tool_result`（`useWebSocket.ts:1894`）：渲染工具结果。
+- `chat.final`（`useWebSocket.ts:1593`）：`normalizeFinalContent`，`setProcessing(false)`——turn 结束标记。文本已在 delta 累加完，`done` payload 是 `{}`，别"修"成放全文（会双渲染）。
+- `chat.error`（`useWebSocket.ts:2133`）：错误提示。
+
+### 阶段 7 — turn 结束持久化
+
+- `agent_loop` 无 `tool_use` 时 `emit("done", {})` 返回；`_run_turn` 的 `finally`（`sessions.py:417`）：`db.save_chat_record` + `db.save_llm_context` + ctx 快照，清 `_worker`，下一句可进。
+- **三层 replay**：`live:{sid}`（token 级，24h）→ 过期 → 从 `chat:{sid}`（消息级 record）合成 → 过期 → 从 Postgres `chat_record` 重放。LLM 只读 `context_messages`，不读 Redis；Redis 纯为 replay/热恢复，Postgres 是持久真相。
+
+### 子流程 — 中途权限请求（ask）
+
+agent 执行某个 `tool_use`（如 `write_file`）时，若策略是 `"ask"`：
+
+1. `check_permission`（`agent_core/hooks.py:78`）→ `_ask`（`hooks.py:41`）：生成 `request_id`，**先** `resolver(block, request_id)` 注册 future，**再** `emit("permission_request", {request_id, ...})`，**再** block 住 agent 线程。
+2. `wire.py` 映射成 `chat.ask_user_question`（显式带 `options:[Allow,Deny]`，否则前端 `UserQuestionModal` 渲染 `options.map` 崩）→ 前端弹窗。
+3. 用户点 Allow → `sendUserAnswer(sid, request_id, answers, "permission_interrupt")`（`useWebSocket.ts:1205`）→ `request('chat.send', {session_id, request_id, answers, source:"permission_interrupt"})`。
+4. gateway `agent_compat.py:55-85` 的 `rid` 分支：`gs.grant(rid, allow)` 解掉 future → agent worker 线程恢复，继续执行该 tool，后续 `tool_result` / `done` 正常回流。
+
+> `request_id` 必须闭环：`_ask` 自己生成 id 并发给客户端，`gs.grant(rid)` 才能找到 pending future。用 `permission.request(block)`（内部 uuid 没发给客户端）会导致 Allow 点击无效。
+
+### record vs context_messages（贯穿全程）
+
+`Session` 维护两条消息列表（`agent_core/session.py:98-99`）：`record`（只追加、永不压缩、持久真相）和 `context_messages`（LLM 实际看的、可压缩）。所有 `append` 走 `append_both`（`session.py:123`）同步两边；压缩（`prepare_context`）只 `messages[:] = ...` 动 `context_messages`，绝不碰 `record`——这是避免 400 + replay 丢失的关键。
 
 ---
 
@@ -192,7 +286,7 @@ myAgent/
 │   ├── sessions.py        # SessionManager + GatewaySession
 │   ├── pipe.py            # EventPipe / ChatStreamPipe / ContextStore
 │   ├── db.py              # psycopg3 + 连接池
-│   ├── gateway_push/wire.py  # agent 事件 → jiuwenswarm 事件
+│   ├── gateway_push/wire.py  # agent 事件 → myagent 事件
 │   └── common/e2a/agent_compat.py  # ~30 个 WS method 派发
 ├── frontend_vite/         # React + Vite + Tailwind
 ├── code.py                # re-export facade（import code / python code.py 都能用）

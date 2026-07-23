@@ -1,4 +1,4 @@
-"""WebChannel RPC handlers — register one handler per ReqMethod (mirrors jiuwenswarm app_web_handlers).
+"""WebChannel RPC handlers — register one handler per ReqMethod (mirrors myagent app_web_handlers).
 
 Each handler signature: async def(params, channel, request_id) -> payload dict.
 The handler runs through agent_compat.execute_agent_request, which is the single

@@ -1,4 +1,4 @@
-"""heartbeat — gateway liveness service (mirrors jiuwenswarm gateway/heartbeat)."""
+"""heartbeat — gateway liveness service (mirrors myagent gateway/heartbeat)."""
 from .heartbeat import HeartbeatService
 
 __all__ = ["HeartbeatService"]

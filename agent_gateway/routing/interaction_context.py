@@ -1,6 +1,6 @@
 """InteractionContext — per-request context carried through hooks/handlers.
 
-Mirrors jiuwenswarm routing/interaction_context. Holds the channel, session,
+Mirrors myagent routing/interaction_context. Holds the channel, session,
 request_id, and permission context for the duration of one inbound request so
 hook handlers and approval coordinators don't re-derive it.
 """

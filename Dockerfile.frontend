@@ -1,4 +1,4 @@
-# Frontend: jiuwenswarm Vite app (vendored into frontend_vite/), built to static
+# Frontend: myagent Vite app (vendored into frontend_vite/), built to static
 # dist/ and served by nginx. Same-origin in the browser — nginx (port 80) proxies
 # /api/ and /ws to the gateway and everything else to this container (port 3000).
 FROM node:20-slim AS build

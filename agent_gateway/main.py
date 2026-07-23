@@ -1,4 +1,4 @@
-"""FastAPI gateway for the myAgent core — jiuwenswarm-style architecture.
+"""FastAPI gateway for the myAgent core — myagent-style architecture.
 
 Boots:
   - SessionManager (one agent_core Session per chat session; unchanged)
@@ -43,7 +43,7 @@ from agent_gateway.message_handler import MessageHandler
 from agent_gateway.heartbeat import HeartbeatService
 
 
-# ── jiuwenswarm-style wiring (module level so /ws is registered at import) ──
+# ── myagent-style wiring (module level so /ws is registered at import) ──
 # The WebChannel only needs the module-level `manager` to mount its route;
 # services that need async start (MessageHandler loop, Heartbeat) are started
 # in the lifespan below.
@@ -61,6 +61,21 @@ register_web_handlers(_web_channel, manager)
 _channel_manager.register(_web_channel)
 
 _heartbeat = HeartbeatService(interval=30.0)
+
+# ── register marketplace installers so the agent's download_skill tool can
+# pull from clawhub/skillhub/skillnet/teamskills by source + id. Install impls
+# live in skill_marketplaces (gateway); agent_core.skills.download_skill
+# dispatches by source to whichever fn is registered here. CLI mode (no
+# gateway) has no installers → download_skill returns 'unsupported source'. ──
+from agent_gateway import skill_marketplaces as _mp
+from agent_core.skills import register_marketplace_installer as _reg_installer
+_reg_installer("clawhub", _mp.clawhub_download)
+_reg_installer("skillhub", _mp.skillhub_install)
+_reg_installer("skillnet", _mp.skillnet_install)
+_reg_installer("teamskills", _mp.teamskills_install)
+
+from agent_core.skills import register_marketplace_search as _reg_search
+_reg_search(_mp.search_marketplaces)
 
 
 @asynccontextmanager
@@ -327,7 +342,7 @@ sse.register(app, manager)
 
 
 # ── file-api (REST file browser for the Sessions/Agent panels) ──
-# The jiuwenswarm frontend browses on-disk session artifacts via /file-api/*
+# The myagent frontend browses on-disk session artifacts via /file-api/*
 # (list-files, file-content). myAgent keeps conversation history in postgres,
 # not on disk, so per-session file dirs are usually empty — but the routes
 # must exist and return {files: []} for missing dirs instead of 404, else the
@@ -423,7 +438,7 @@ async def file_api_file_content(path: str = "", encoding: str = "utf-8"):
     except LookupError:
         # "auto" (or any unknown codec the frontend FileViewer sends): sniff the
         # encoding from the bytes, falling back to a tolerant utf-8 decode so the
-        # preview never 500s. Mirrors jiuwenswarm's charset_normalizer behavior
+        # preview never 500s. Mirrors myagent's charset_normalizer behavior
         # without adding the dependency.
         try:
             raw = full.read_bytes()
@@ -450,7 +465,7 @@ def _decode_auto(raw: bytes) -> str:
 @app.post("/file-api/rebuild-agent-data")
 async def file_api_rebuild_agent_data():
     """Generate agent/workspace/agent-data.json (Record<folder_key, FileInfo[]>)
-    for the jiuwenswarm AgentPanel file browser by walking the REAL mounted
+    for the myagent AgentPanel file browser by walking the REAL mounted
     workspace (/app/workspace ← ~/.myAgent/workspace). The frontend browses it
     under the `agent/workspace/...` prefix; _resolve_under_root rewrites that
     prefix to the real workspace, and file display paths keep the prefix so

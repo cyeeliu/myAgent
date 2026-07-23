@@ -13,10 +13,10 @@ interface ErrorWithCode {
 
 /**
  * file-api 使用的项目根目录，需与后端 get_root_dir() 一致，前端编辑的 HEARTBEAT.md 才会被心跳读到。
- * 优先级：环境变量 > 已存在的用户工作区 ~/.jiuwenswarm > 仓库根。
+ * 优先级：环境变量 > 已存在的用户工作区 ~/.myagent > 仓库根。
  */
 function resolveProjectRootDir(): string {
-  const envRoot = process.env.JIUWENSWARM_ROOT || process.env.JIUWENSWARM_PROJECT_ROOT
+  const envRoot = process.env.MYAGENT_ROOT || process.env.MYAGENT_PROJECT_ROOT
   if (envRoot) {
     const resolved = path.resolve(envRoot)
     console.log('[file-api] 使用环境变量根目录:', resolved)
@@ -25,12 +25,12 @@ function resolveProjectRootDir(): string {
   const home = process.env.USERPROFILE || process.env.HOME || ''
   if (home) {
     // 优先检查多实例环境变量
-    const envWorkspace = process.env.JIUWENSWARM_DATA_DIR
+    const envWorkspace = process.env.MYAGENT_DATA_DIR
     if (envWorkspace) {
-      console.log('[file-api] 使用 JIUWENSWARM_DATA_DIR:', path.resolve(envWorkspace))
+      console.log('[file-api] 使用 MYAGENT_DATA_DIR:', path.resolve(envWorkspace))
       return path.resolve(envWorkspace)
     }
-    const userWorkspace = path.join(home, '.jiuwenswarm')
+    const userWorkspace = path.join(home, '.myagent')
     if (fs.existsSync(userWorkspace)) {
       console.log('[file-api] 使用用户工作区:', path.resolve(userWorkspace))
       return path.resolve(userWorkspace)
@@ -297,7 +297,7 @@ function devFileContentApi(): Plugin {
           }
 
           const now = new Date()
-          const filename = `jiuwenswarm-share-${now.toISOString().replace(/[-:]/g, '').replace(/\..+$/, '').replace('T', '-')}.png`
+          const filename = `myagent-share-${now.toISOString().replace(/[-:]/g, '').replace(/\..+$/, '').replace('T', '-')}.png`
           const snapshot = {
             session_id: sessionId,
             metadata: {
@@ -519,7 +519,7 @@ function devFileContentApi(): Plugin {
                 try {
                   const runResult = spawnSync(process.execPath, [generateAgentFoldersScriptPath], {
                     encoding: 'utf-8',
-                    env: { ...process.env, JIUWENSWARM_ROOT: projectRootDir },
+                    env: { ...process.env, MYAGENT_ROOT: projectRootDir },
                     cwd: path.dirname(path.dirname(generateAgentFoldersScriptPath)),
                   })
                   if (runResult.status === 0 && fs.existsSync(fullPath)) {

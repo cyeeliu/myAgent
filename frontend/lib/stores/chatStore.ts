@@ -1,5 +1,5 @@
 // chatStore — conversation state driven by the gateway's dotted event stream.
-// Mirrors jiuwenswarm's chatStore shape (messages + toolExecutions + streaming
+// Mirrors myagent's chatStore shape (messages + toolExecutions + streaming
 // buffer + processing flags) but fed by myAgent's event names:
 //   chat.delta → append token to the streaming assistant message
 //   chat.tool_call → register a ToolExecution (pending)

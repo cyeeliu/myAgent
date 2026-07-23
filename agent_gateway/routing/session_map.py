@@ -1,4 +1,4 @@
-"""SessionMap — channel↔session binding (mirrors jiuwenswarm routing/session_map).
+"""SessionMap — channel↔session binding (mirrors myagent routing/session_map).
 
 Maps a (channel_id, channel_local_key) → session_id so an inbound IM message
 lands on the same session across turns. For the web channel the session_id is

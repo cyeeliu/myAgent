@@ -218,8 +218,8 @@
     "placeholderTeamMode": "集群模式，输入新指令会并行执行...",
     "placeholderTeamModeProcessing": "集群模式处理中，输入新指令会并行执行...",
     "placeholderVoice": "正在听取语音...",
-    "welcomeLogoAlt": "JiuwenSwarm 标志",
-    "welcomeHeading": "你好，我是JiuwenSwarm，很高兴认识你！",
+    "welcomeLogoAlt": "MyAgent 标志",
+    "welcomeHeading": "你好，我是MyAgent，很高兴认识你！",
     "welcomeSubtext": "我可以帮你回答问题，解决疑惑，还可以帮你完成一些任务。",
     "welcomeSuggestions": {
       "journey": "让我们开启一段新的旅程吧！",
@@ -291,7 +291,7 @@
     "status": "状态",
     "contextCompression": "上下文窗口",
     "memoryUsage": "内存占用",
-    "poweredBy": "Powered by openJiuwen",
+    "poweredBy": "Powered by myAgent",
     "noExtension": "暂无扩展文件",
     "refreshFiles": "刷新",
     "fileNotPreviewable": "此文件类型不支持预览",
@@ -504,7 +504,7 @@
     "skillnet": {
       "usageNoticeTitle": "提示",
       "usageNotice1": "SkillNet 在线搜索走公网服务，若出现超时或失败，可能是网络拥堵或服务繁忙，请稍后再试。",
-      "usageNotice2": "从 SkillNet 安装技能时，文件实际从 GitHub 下载，<strong>请保证运行 JiuwenSwarm 的环境能访问 GitHub</strong>（网络、代理等）。",
+      "usageNotice2": "从 SkillNet 安装技能时，文件实际从 GitHub 下载，<strong>请保证运行 MyAgent 的环境能访问 GitHub</strong>（网络、代理等）。",
       "usageNotice3": "从 GitHub 拉取依赖其 API：未认证（匿名）约 60 次/小时/本机 IP；若安装失败并提示限流，请隔一段时间再试。如需提高速率限制，请在<configLink>配置页面</configLink>中配置 github_token。",
       "configPageLinkAria": "前往配置页面"
     }
@@ -1112,6 +1112,7 @@
       "installing": "安装中...",
       "uninstall": "卸载",
       "importLocal": "导入本地技能",
+      "importServerPath": "从服务器路径导入",
       "sourceManager": "源管理",
       "backToList": "返回列表",
       "viewEvolution": "查看技能经验",
@@ -1382,7 +1383,7 @@
       "url": "地址",
       "installTimeout": "SkillNet 安装超时（后台可能仍在进行），请稍后刷新技能列表",
       "usageNoticeTitle": "提示",
-      "usageNotice1": "从 SkillNet 安装技能时，文件实际从 GitHub 下载，<strong>请保证运行 JiuwenSwarm 的环境能访问 GitHub</strong>（网络、代理等）。",
+      "usageNotice1": "从 SkillNet 安装技能时，文件实际从 GitHub 下载，<strong>请保证运行 MyAgent 的环境能访问 GitHub</strong>（网络、代理等）。",
       "usageNotice2": "从 GitHub 拉取依赖其 API：未认证（匿名）约 60 次/小时/本机 IP；若安装失败并提示限流，请隔一段时间再试。如需提高速率限制，请在<configLink>配置页面</configLink>中配置 github_token。",
       "configPageLinkAria": "前往配置页面",
       "usageNotice3": "SkillNet 在线搜索走公网服务，若出现超时或失败，可能是网络拥堵或服务繁忙，请稍后再试。",
@@ -1493,6 +1494,7 @@
     "marketplacesDefault": "默认 marketplace: anthropics",
     "installPrompt": "请输入插件规格 (plugin@marketplace)",
     "importPrompt": "请输入服务端本地 skill 路径（SKILL.md 或目录）",
+    "importUploadHint": "选择 SKILL.md 或 .zip 压缩包",
     "uninstallConfirm": "确认卸载 {{pluginName}} ?",
     "messages": {
       "installing": "安装中：{{name}}...",
@@ -1628,7 +1630,7 @@
     "groupChat": "群聊记录",
     "noGroupChat": "暂无群聊记录",
     "everyone": "所有人",
-    "generatedBy": "由 openJiuwen AI 生成",
+    "generatedBy": "由 myAgent AI 生成",
     "website": "官网地址：{{url}}",
     "repository": "代码仓：{{url}}"
   },
@@ -1722,7 +1724,7 @@
   },
   "version": "版本 {{version}}",
   "app": {
-    "title": "JiuwenSwarm",
+    "title": "MyAgent",
     "subtitle": "AI Assistant",
     "errorTitle": "应用加载出错",
     "unknownError": "未知错误",
@@ -1766,7 +1768,7 @@
     "helpTitle": "使用说明",
     "help0": "扩展文件夹必须包含 rail.py 作为入口文件",
     "help1": "Rail 扩展文件必须继承 DeepAgentRail 或 AgentRail 基类",
-    "help2": "扩展文件会被保存到 ~/.jiuwenswarm/agent/workspace/extensions/ 目录"
+    "help2": "扩展文件会被保存到 ~/.myagent/agent/workspace/extensions/ 目录"
   },
   "ownerScopes": {
     "title": "分身权限配置",

@@ -1,4 +1,4 @@
-"""agent_gateway.channel_manager — multi-channel abstraction (mirrors jiuwenswarm).
+"""agent_gateway.channel_manager — multi-channel abstraction (mirrors myagent).
 
 A Channel is a transport (web WS, IM, ACP, …) that produces inbound requests
 and consumes outbound events. ChannelManager owns registration, the outbound

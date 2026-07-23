@@ -1,5 +1,5 @@
 // todoStore — the agent's task list (TaskCreate/TaskUpdate items). The gateway
-// surfaces todo updates as `todo.updated` events in jiuwenswarm; myAgent's
+// surfaces todo updates as `todo.updated` events in myagent; myAgent's
 // agent_core doesn't emit those yet, so this store is wired but mostly idle —
 // it exists so the multi-panel shell can render a todos panel and the chatStore
 // can forward subtask updates without a separate dependency.

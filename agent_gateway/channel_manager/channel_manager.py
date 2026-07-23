@@ -1,4 +1,4 @@
-"""ChannelManager — channel lifecycle + outbound dispatch loop (mirrors jiuwenswarm).
+"""ChannelManager — channel lifecycle + outbound dispatch loop (mirrors myagent).
 
 Owns:
   1. channel register/unregister/find
@@ -77,7 +77,7 @@ class ChannelManager:
         In single-process myAgent the outbound path is the session EventPipe →
         WebChannel subscriber (wired directly in web_connect), so this loop is a
         no-op fallback for channels that opt into the centralized queue. Kept to
-        mirror jiuwenswarm's double-queue shape for future IM channels.
+        mirror myagent's double-queue shape for future IM channels.
         """
         if self._message_handler is None:
             return

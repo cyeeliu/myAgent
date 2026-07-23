@@ -1,7 +1,7 @@
 """Online skill marketplace backends — ClawHub (clawhub.ai) and SkillNet
 (github.com/zjunlp/SkillNet, searched via GitHub's repository search API).
 
-These back the jiuwenswarm SkillPanel's `skills.clawhub.*` / `skills.skillnet.*`
+These back the myagent SkillPanel's `skills.clawhub.*` / `skills.skillnet.*`
 WS methods so the 技能广场 online subtabs have real content. All HTTP uses stdlib
 urllib (no extra deps). Search hits the upstream public APIs (no token needed);
 install writes the skill into the shared workspace `skills/` dir so the agent's
@@ -479,3 +479,49 @@ def teamskills_install(asset_id: str, force: bool = False) -> dict:
         return {"success": True, "skill": {"name": asset_id}}
     except Exception as e:
         return {"success": False, "detail": f"install failed: {e}"}
+
+
+def search_marketplaces(query: str, source: str | None = None, limit: int = 20) -> dict:
+    """Unified marketplace search for the agent's search_skill tool. Searches one
+    source (if `source` given) or all four, normalizing hits to
+    {source, id, name, summary, stars, downloads} where `id` is exactly what
+    download_skill(source, id) expects (skillnet id is the repo URL). Reuses the
+    per-source search fns so their TTL cache + SWR still apply. Failures per
+    source are skipped (one bad upstream doesn't blank the whole result)."""
+    q = (query or "").strip()
+    sources = [source] if source else ["clawhub", "skillhub", "skillnet", "teamskills"]
+    results, searched = [], []
+    for src in sources:
+        try:
+            if src == "clawhub":
+                for it in (clawhub_search(q, limit=limit).get("skills") or []):
+                    results.append({"source": "clawhub", "id": it.get("slug", ""),
+                                    "name": it.get("display_name") or it.get("slug", ""),
+                                    "summary": it.get("summary", ""),
+                                    "stars": None, "downloads": it.get("downloads")})
+            elif src == "skillhub":
+                for it in (skillhub_search(q, limit=limit).get("skills") or []):
+                    sid = it.get("asset_id") or it.get("name", "")
+                    results.append({"source": "skillhub", "id": sid,
+                                    "name": it.get("display_name") or it.get("name", ""),
+                                    "summary": it.get("summary", ""),
+                                    "stars": it.get("stars"), "downloads": it.get("downloads")})
+            elif src == "skillnet":
+                for it in (skillnet_search(q, limit=limit).get("skills") or []):
+                    results.append({"source": "skillnet", "id": it.get("skill_url", ""),
+                                    "name": it.get("skill_name", ""),
+                                    "summary": it.get("skill_description", ""),
+                                    "stars": it.get("stars"), "downloads": None})
+            elif src == "teamskills":
+                for it in (teamskills_search(q, limit=limit).get("skills") or []):
+                    sid = it.get("asset_id") or it.get("name", "")
+                    results.append({"source": "teamskills", "id": sid,
+                                    "name": it.get("display_name") or it.get("name", ""),
+                                    "summary": it.get("summary", ""),
+                                    "stars": None, "downloads": None})
+            else:
+                continue
+            searched.append(src)
+        except Exception:
+            continue
+    return {"success": True, "results": results, "sources_searched": searched}

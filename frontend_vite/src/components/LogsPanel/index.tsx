@@ -5,7 +5,7 @@ interface LogsPanelProps {
   isConnected: boolean;
 }
 
-const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
+const WS_RECONNECT_EVENT = 'myagent:ws-reconnect-request';
 
 function formatLogEntries(entries: unknown[]): string {
   return entries

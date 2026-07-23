@@ -1,7 +1,7 @@
 """Event base — the common shape of every server→client push.
 
 A gateway push is `{event, payload, seq?}`. `event` is a dotted name
-(`chat.delta`, `chat.tool_call`, `session.updated`, …) matching jiuwenswarm's
+(`chat.delta`, `chat.tool_call`, `session.updated`, …) matching myagent's
 wire. Concrete event kinds are produced by gateway_push.wire from agent_core's
 EVENT_KINDS, so there is no parallel taxonomy: agent_core keeps its short
 names, the wire layer maps them at the boundary.

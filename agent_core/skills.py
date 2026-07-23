@@ -417,6 +417,104 @@ def import_local_skill(path: str, force: bool = False) -> dict:
     return {"success": True, "skill": {"name": name}}
 
 
+def import_upload_skill(filename: str, data: bytes, force: bool = False) -> dict:
+    """Import a skill from an uploaded file (a SKILL.md or a .zip of a skill dir).
+
+    Writes the upload to a temp path (extracting zips first), then reuses
+    ``import_local_skill`` for name derivation (frontmatter → stem/fallback),
+    ``resolve_install_dst`` collision handling, and the final copy into
+    workspace/skills/<name>/. Keeps a single source of truth for install logic.
+    """
+    import io, tempfile, zipfile
+    if not data:
+        return {"success": False, "detail": "empty upload"}
+    if len(data) > 20 * 1024 * 1024:
+        return {"success": False, "detail": "file too large (>20MB)"}
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        fn = (filename or "SKILL.md").lower()
+        if fn.endswith(".zip"):
+            try:
+                zf = zipfile.ZipFile(io.BytesIO(data))
+            except zipfile.BadZipFile:
+                return {"success": False, "detail": "bad zip file"}
+            # zip-slip guard: reject absolute / parent-traversal entries
+            for member in zf.namelist():
+                if member.startswith(("/", "\\")) or ".." in Path(member).parts:
+                    return {"success": False, "detail": f"unsafe zip entry: {member}"}
+            zf.extractall(tmp)
+            zf.close()
+            # locate SKILL.md: at root, or exactly one child dir has it
+            if (tmp / "SKILL.md").exists():
+                target = tmp
+            else:
+                kids = [p for p in tmp.iterdir() if p.is_dir() and (p / "SKILL.md").exists()]
+                if len(kids) != 1:
+                    return {"success": False, "detail": "zip has no single skill dir with SKILL.md"}
+                target = kids[0]
+        else:
+            # single .md — keep original filename so the stem fallback is meaningful
+            target = tmp / (filename or "SKILL.md")
+            target.write_bytes(data)
+        return import_local_skill(str(target), force=force)
+
+
+_MARKETPLACE_INSTALLERS: dict = {}
+
+
+def register_marketplace_installer(source: str, fn) -> None:
+    """Register a marketplace install function so the agent's download_skill
+    tool can pull from that source by id. Called by the gateway at startup
+    (agent_core must not import agent_gateway, so installers are injected).
+    fn signature: fn(id: str, force: bool = False) -> dict."""
+    _MARKETPLACE_INSTALLERS[source] = fn
+
+
+def download_skill(source: str, name: str, force: bool = False) -> dict:
+    """Download and install a skill from an online marketplace by id/slug.
+    Dispatches to the installer registered for `source`:
+      clawhub   -> clawhub_download(slug)
+      skillhub  -> skillhub_install(slug)
+      skillnet  -> skillnet_install(url)   # name is a GitHub repo URL
+      teamskills-> teamskills_install(asset_id)
+    Installers are registered by the gateway at startup; in CLI mode without
+    the gateway, returns 'unsupported source'."""
+    fn = _MARKETPLACE_INSTALLERS.get(source)
+    if not fn:
+        known = ", ".join(sorted(_MARKETPLACE_INSTALLERS)) or "(none)"
+        return {"success": False,
+                "detail": f"unsupported source: {source} (known: {known})"}
+    try:
+        return fn(name, force=force)
+    except Exception as e:
+        return {"success": False, "detail": f"install failed: {e}"}
+
+
+_MARKETPLACE_SEARCH = None
+
+
+def register_marketplace_search(fn) -> None:
+    """Register the unified marketplace search function (called by the gateway
+    at startup). fn(query, source, limit) -> dict."""
+    global _MARKETPLACE_SEARCH
+    _MARKETPLACE_SEARCH = fn
+
+
+def search_skill(query: str, source: str | None = None, limit: int = 20) -> dict:
+    """Search online skill marketplaces for skills matching a task/query.
+    Returns {success, results:[{source, id, name, summary, stars, downloads}]}.
+    Pass source + id to download_skill to install. source: optional, one of
+    clawhub/skillhub/skillnet/teamskills; omit to search all. Requires the
+    gateway (search backends registered at gateway startup)."""
+    if not _MARKETPLACE_SEARCH:
+        return {"success": False,
+                "detail": "marketplace search not available (requires gateway)"}
+    try:
+        return _MARKETPLACE_SEARCH(query, source, limit)
+    except Exception as e:
+        return {"success": False, "detail": f"search failed: {e}"}
+
+
 def list_marketplaces() -> dict:
     """Static catalog of the online marketplaces the gateway backs. The frontend
     SkillsPanel uses this for the marketplace list / install-source picker."""

@@ -1,4 +1,4 @@
-"""MessageHandler — double-queue inbound routing (mirrors jiuwenswarm message_handler).
+"""MessageHandler — double-queue inbound routing (mirrors myagent message_handler).
 
 Inbound queue: channel reqs → handler → agent_compat (in-process).
 Outbound queue: agent_core events addressed to a channel → channel.send_event.

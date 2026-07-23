@@ -1,4 +1,4 @@
-"""message_handler — double-queue inbound routing (mirrors jiuwenswarm gateway/message_handler)."""
+"""message_handler — double-queue inbound routing (mirrors myagent gateway/message_handler)."""
 from .message_handler import MessageHandler
 from .command_parser import parse_slash_command, ParsedCommand
 

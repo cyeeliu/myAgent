@@ -47,7 +47,7 @@ def _is_internal_user_prompt(text: str) -> bool:
             or text.startswith(TODO_REMINDER_PREFIX)
             or text.startswith(TASK_NOTIFICATION_PREFIX))
 
-# On-disk session artifacts root. The jiuwenswarm frontend's SessionsPanel browses
+# On-disk session artifacts root. The myagent frontend's SessionsPanel browses
 # `agent/sessions/{sid}/` via the /file-api REST routes (rooted at REPO_ROOT);
 # writing the conversation here makes the file list non-empty and previewable.
 SESSION_FILES_ROOT = code.REPO_ROOT / "agent" / "sessions"
@@ -117,7 +117,7 @@ def _write_session_files(sid: str, record: list) -> None:
     (which browses that dir via /file-api) has previewable content. Best-effort:
     failures are swallowed (the DB is the source of truth, not these files).
 
-    history.json is written in the shape the jiuwenswarm SessionsPanel preview
+    history.json is written in the shape the myagent SessionsPanel preview
     parser (parseHistoryTimelineEntry) expects: each user turn as
     {role:"user", content:<str>, timestamp}, each assistant text as
     {role:"assistant", event_type:"chat.final", content:<str>, timestamp}.

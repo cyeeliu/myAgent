@@ -1,4 +1,4 @@
-"""gateway_normalize — channel request → AgentRequest (mirrors jiuwenswarm e2a).
+"""gateway_normalize — channel request → AgentRequest (mirrors myagent e2a).
 
 Pulls session_id / mode / permission out of the method params into first-class
 AgentRequest fields so agent_compat.execute doesn't re-parse. Keeps the raw

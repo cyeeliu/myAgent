@@ -9,7 +9,7 @@ export default {
   theme: {
     extend: {
       colors: {
-        // CSS variable based colors for JiuwenSwarm design system
+        // CSS variable based colors for MyAgent design system
         bg: {
           DEFAULT: 'var(--bg)',
           accent: 'var(--bg-accent)',

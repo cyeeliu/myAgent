@@ -1,4 +1,4 @@
-"""BaseChannel + ChannelMetadata + RobotMessageRouter (mirrors jiuwenswarm base.py).
+"""BaseChannel + ChannelMetadata + RobotMessageRouter (mirrors myagent base.py).
 
 A channel registers method handlers (`register_method`) for inbound requests and
 publishes outbound events via `send_event`. The ChannelManager drives the

@@ -13,7 +13,7 @@ from agent_core.cron import run_cancel_cron, run_list_crons, run_schedule_cron
 from agent_core.env import workdir
 # connect_mcp imported lazily inside run_connect_mcp to avoid a tools<->mcp
 # circular import (mcp.assemble_tool_pool imports BUILTIN_* from tools).
-from agent_core.skills import load_skill
+from agent_core.skills import load_skill, download_skill, search_skill
 from agent_core.subagent import spawn_subagent
 from agent_core.tasks import claim_task, complete_task, create_task, get_task_json, list_tasks, set_todos
 from agent_core.teammates import run_request_plan, run_request_shutdown, run_review_plan, spawn_teammate_thread, start_team, run_team_info
@@ -909,6 +909,28 @@ BUILTIN_TOOLS = [
      "input_schema": {"type": "object",
                       "properties": {"name": {"type": "string"}},
                       "required": ["name"]}},
+    {"name": "download_skill",
+     "description": "Download and install a skill from an online marketplace by "
+                    "its id/slug. source: 'clawhub' | 'skillhub' | 'skillnet' | "
+                    "'teamskills'. name: the skill slug/id (for 'skillnet', the "
+                    "GitHub repo URL). Set force=true to overwrite an existing "
+                    "skill of the same name.",
+     "input_schema": {"type": "object",
+                      "properties": {"source": {"type": "string"},
+                                     "name": {"type": "string"},
+                                     "force": {"type": "boolean"}},
+                      "required": ["source", "name"]}},
+    {"name": "search_skill",
+     "description": "Search online skill marketplaces for skills matching a task "
+                    "or keywords. Returns results as {source, id, name, summary, "
+                    "stars, downloads} — pass source + id to download_skill to "
+                    "install. source: optional, 'clawhub' | 'skillhub' | "
+                    "'skillnet' | 'teamskills'; omit to search all.",
+     "input_schema": {"type": "object",
+                      "properties": {"query": {"type": "string"},
+                                     "source": {"type": "string"},
+                                     "limit": {"type": "integer"}},
+                      "required": ["query"]}},
     {"name": "compact",
      "description": "Summarize earlier conversation and continue with compacted context.",
      "input_schema": {"type": "object",
@@ -1051,6 +1073,8 @@ BUILTIN_HANDLERS = {
     "task_list": run_task_list,
     "todo_write": run_todo_write, "task": spawn_subagent,
     "load_skill": load_skill,
+    "download_skill": download_skill,
+    "search_skill": search_skill,
     "create_task": run_create_task, "list_tasks": run_list_tasks,
     "get_task": run_get_task,
     "claim_task": run_claim_task, "complete_task": run_complete_task,

@@ -1,4 +1,4 @@
-"""wire — map agent_core event frames → jiuwenswarm-style dotted event frames.
+"""wire — map agent_core event frames → myagent-style dotted event frames.
 
 agent_core EVENT_KINDS: token, text, tool_start, tool_result, error,
 permission_request, compacted, done, user, task_notification, memory.
@@ -50,7 +50,7 @@ def build_event(event: str, payload: dict[str, Any], seq: Optional[int] = None) 
 
 
 # tool_start → tool_result correlation: agent_core's tool_result frame carries only
-# {id, content} (no tool name), but the jiuwenswarm frontend's tool_result normalizer
+# {id, content} (no tool name), but the myagent frontend's tool_result normalizer
 # reads tool_name/name for display. Cache id→name from tool_start so the result can
 # carry the name. Bounded; entries self-evict on the next tool_start with the same id.
 _TOOL_NAME_CACHE: dict[str, str] = {}
@@ -66,7 +66,7 @@ def _remember_tool_name(tool_id: Any, name: Any) -> None:
 
 
 def _remap_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Map agent_core payload fields → jiuwenswarm frontend-expected field names.
+    """Map agent_core payload fields → myagent frontend-expected field names.
 
     The frontend's useWebSocket handlers read these keys (see toolEventNormalizer):
       chat.delta      → payload.content

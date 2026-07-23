@@ -1,4 +1,4 @@
-"""Unified schema layer (mirrors jiuwenswarm common/schema)."""
+"""Unified schema layer (mirrors myagent common/schema)."""
 from .message import ReqMethod, Mode, Message
 from .agent import (
     AgentRequest,

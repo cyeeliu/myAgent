@@ -1,6 +1,6 @@
-"""AgentServerClient — in-process client for agent_core (mirrors jiuwenswarm routing/agent_client).
+"""AgentServerClient — in-process client for agent_core (mirrors myagent routing/agent_client).
 
-In jiuwenswarm this is a WS client to a remote AgentServer. myAgent keeps
+In myagent this is a WS client to a remote AgentServer. myAgent keeps
 agent_core in-process, so the "client" is a thin async wrapper around
 agent_compat.execute_agent_request + the SessionManager. The interface is kept
 WS-client-shaped (request/subscribe) so swapping to a real remote AgentServer

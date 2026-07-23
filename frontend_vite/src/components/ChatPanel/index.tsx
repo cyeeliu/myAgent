@@ -166,14 +166,14 @@ function WelcomeHeading() {
   if (isZh) {
     return (
       <>
-        我是<span className="chat-welcome__brand">JiuwenSwarm</span>，很高兴认识你!
+        我是<span className="chat-welcome__brand">MyAgent</span>，很高兴认识你!
       </>
     );
   }
 
   return (
     <>
-      Hi, I&apos;m <span className="chat-welcome__brand">JiuwenSwarm</span>. Nice to meet you!
+      Hi, I&apos;m <span className="chat-welcome__brand">MyAgent</span>. Nice to meet you!
     </>
   );
 }

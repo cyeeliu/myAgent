@@ -1,4 +1,4 @@
-"""WebChannel — method-routed WebSocket channel at /ws (mirrors jiuwenswarm web_connect).
+"""WebChannel — method-routed WebSocket channel at /ws (mirrors myagent web_connect).
 
 Wire protocol (single connection per client):
   client → server: {type:"req", id, method, params}
@@ -79,7 +79,7 @@ class WebChannel(BaseChannel):
         async def ws_endpoint(ws: WebSocket,
                               session_id: Optional[str] = Query(default=None),
                               last_seq: int = Query(default=0, ge=0),
-                              # jiuwenswarm frontend sends these on connect; we accept
+                              # myagent frontend sends these on connect; we accept
                               # and ignore them (myAgent config is server-side, not per-conn).
                               provider: Optional[str] = Query(default=None),
                               api_key: Optional[str] = Query(default=None),
@@ -94,12 +94,12 @@ class WebChannel(BaseChannel):
         debug("connect sid=%r last_seq=%r", session_id, last_seq)
         loop = asyncio.get_running_loop()
         # Connection state held in a mutable holder so _receiver can bind the
-        # session's event drain mid-connection (the jiuwenswarm frontend keeps a
+        # session's event drain mid-connection (the myagent frontend keeps a
         # single socket with no ?session_id= and sends session_id inside
         # chat.send / session.create params; the drain must start when those
         # arrive, not only at connect time).
         ctx = {"bound_sid": session_id, "sender_task": None, "last_seq": last_seq}
-        # jiuwenswarm frontend waits for connection.ack (or legacy hello) before
+        # myagent frontend waits for connection.ack (or legacy hello) before
         # marking the socket ready and issuing config.get/models.list/session.list.
         # Emit it immediately after accept so the on-connect bootstrap proceeds.
         try:
@@ -275,7 +275,7 @@ class WebChannel(BaseChannel):
             # chat.send carries session_id in the envelope; session.create returns
             # the new session_id in its payload. Without this, tokens emitted by
             # the worker thread never reach a client that connected without
-            # ?session_id= (the jiuwenswarm frontend's default mode).
+            # ?session_id= (the myagent frontend's default mode).
             if env.method == ReqMethod.CHAT_SEND and req.session_id:
                 await self._ensure_drain(ws, loop, ctx, req.session_id)
             elif env.method == ReqMethod.SESSION_CREATE:
@@ -303,7 +303,7 @@ class WebChannel(BaseChannel):
 
     async def _drain_session(self, ws: WebSocket, gs, last_seq: int, outbound_sub):
         """Replay missed frames then drain the live EventPipe, mapping each to a
-        jiuwenswarm-style event frame. Heartbeat on silence."""
+        myagent-style event frame. Heartbeat on silence."""
         sid = gs.session_id
         debug("drain start sid=%r last_seq=%r", sid, last_seq)
         try:

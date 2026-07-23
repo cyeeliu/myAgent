@@ -1,6 +1,6 @@
 """agent_gateway.common.e2a — External-to-Agent envelope + wire codec.
 
-Mirrors jiuwenswarm's `common/e2a/`. A channel request (web WS, IM, …) is
+Mirrors myagent's `common/e2a/`. A channel request (web WS, IM, …) is
 wrapped in an E2AEnvelope, normalized to an AgentRequest, then executed
 in-process against agent_core (single-process — no separate AgentServer WS).
 """

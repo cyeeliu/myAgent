@@ -1,6 +1,6 @@
 """agent_compat — AgentRequest → in-process agent_core call (single-process).
 
-In jiuwenswarm this would be a WS hop to a separate AgentServer. myAgent keeps
+In myagent this would be a WS hop to a separate AgentServer. myAgent keeps
 agent_core in-process, so "compat" is a direct dispatch: chat.send posts a user
 message to the GatewaySession worker thread; session/history/config/skills/agents
 methods call the matching agent_core / db / model_config function.
@@ -249,7 +249,7 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
               sid, getattr(gs.agent, "_seq", 0), len(gs.agent.record or []))
         # Stream the conversation as history.message events (one per record),
         # finalized with a status:'done' frame — this is the contract the
-        # jiuwenswarm frontend's beginHistoryRestore subscribes to. The RPC
+        # myagent frontend's beginHistoryRestore subscribes to. The RPC
         # response below is just an ack; the data arrives as events on the
         # session pipe (drained over the WS). Records are emitted newest-first
         # to match the frontend's entries.unshift() ordering.
@@ -413,6 +413,15 @@ async def execute_agent_request(req: AgentRequest, *, sessions) -> AgentResponse
     if m == ReqMethod.SKILLS_IMPORT_LOCAL:
         return AgentResponse(req.request_id, payload=code.import_local_skill(
             params.get("path", ""), bool(params.get("force", False))))
+    if m == ReqMethod.SKILLS_IMPORT_UPLOAD:
+        import base64
+        raw_b64 = params.get("content_base64", "") or ""
+        try:
+            data = base64.b64decode(raw_b64) if raw_b64 else b""
+        except Exception:
+            return AgentResponse(req.request_id, payload={"success": False, "detail": "invalid base64"})
+        return AgentResponse(req.request_id, payload=code.import_upload_skill(
+            params.get("filename", ""), data, bool(params.get("force", False))))
     if m == ReqMethod.SKILLS_MARKETPLACE_LIST:
         return AgentResponse(req.request_id, payload=code.list_marketplaces())
     # ── online marketplaces (clawhub.ai / SkillNet via GitHub search) ──
@@ -581,7 +590,7 @@ def _stringify_content(content: Any) -> str:
 
 
 def _emit_history_stream(gs, page_idx: int) -> None:
-    """Convert the agent_core chat record into jiuwenswarm history records and
+    """Convert the agent_core chat record into myagent history records and
     emit them as `history.message` events on the session pipe, newest-first,
     followed by a `status:'done'` frame. The frontend's beginHistoryRestore
     subscribes to history.message events (not the RPC response) and rebuilds
@@ -689,7 +698,7 @@ def _emit_history_stream(gs, page_idx: int) -> None:
 def _list_sessions(sessions) -> list[dict]:
     """Merge DB rows with live sessions (live is at least as fresh).
 
-    Returns jiuwenswarm Session-shape objects: session_id, title, project_path,
+    Returns myagent Session-shape objects: session_id, title, project_path,
     mode, status, message_count, created_at, updated_at (plus transport/last_activity
     for our own use). The frontend Session interface requires these fields.
     """
@@ -738,7 +747,7 @@ def _session_shape(*, session_id: str, title: str, project_path: str,
                    created_at: Any, updated_at: Any, message_count: int,
                    transport: str, last_activity: Any,
                    mode: str = "agent.fast") -> dict:
-    """Coerce to the jiuwenswarm Session interface (string timestamps, defaults)."""
+    """Coerce to the myagent Session interface (string timestamps, defaults)."""
     return {
         "session_id": session_id,
         "title": title or "",

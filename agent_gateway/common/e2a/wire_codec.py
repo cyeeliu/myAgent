@@ -1,6 +1,6 @@
 """Wire codec — encode/decode the E2A envelope to/from the WS wire frame.
 
-Wire shapes (single `/ws` connection, jiuwenswarm-style):
+Wire shapes (single `/ws` connection, myagent-style):
   req   : {type:"req",   id, method, params}
   res   : {type:"res",   id, ok, payload, error?}
   event : {type:"event", event, payload, seq?, stream_id?}

@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import { webRequest } from "../../services/webClient";
 
 /** 与后端 TEAM_SKILLS_HUB_BASE_URL 默认值一致（info 请求失败时的回退） */
-const DEFAULT_TEAMSKILLS_HUB_BASE_URL = "https://teamskills.openjiuwen.com";
+const DEFAULT_TEAMSKILLS_HUB_BASE_URL = "https://teamskills.myagent.com";
 
 type LoadState = "idle" | "loading" | "success" | "error";
 

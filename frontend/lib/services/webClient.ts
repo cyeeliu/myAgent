@@ -1,5 +1,5 @@
 // WebClient — method-routed WebSocket client for the gateway /ws endpoint.
-// Adapted from jiuwenswarm's webClient for the myAgent Next.js frontend:
+// Adapted from myagent's webClient for the myAgent Next.js frontend:
 //   - process.env.NODE_ENV instead of import.meta.env (Next.js, not Vite)
 //   - no /__dev/ws-log endpoint (myAgent has no such route)
 //   - connects to /ws with ?session_id=&last_seq= for replay resume

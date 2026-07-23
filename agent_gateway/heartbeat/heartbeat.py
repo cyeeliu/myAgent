@@ -3,7 +3,7 @@
 Emits a `heartbeat.relay` event every `interval` seconds that channels can
 forward to clients (the WebChannel already sends its own WS heartbeat; this
 service is for IM/monitoring channels and a /api/health pulse). Mirrors
-jiuwenswarm's heartbeat service, scaled down to single-process.
+myagent's heartbeat service, scaled down to single-process.
 """
 from __future__ import annotations
 import asyncio
