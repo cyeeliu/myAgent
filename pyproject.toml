@@ -1,0 +1,105 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "myagent"
+version = "0.1.0"
+description = "myAgent — comprehensive coding agent with FastAPI gateway"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "websockets>=12.0",
+    "psycopg[binary,pool]>=3.1",
+    "redis>=5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[tool.setuptools]
+packages = ["agent_core", "agent_gateway"]
+
+# ── Ruff: lint + format ──
+[tool.ruff]
+target-version = "py311"
+extend-exclude = [
+    ".venv",
+    "frontend",
+    "frontend_vite",
+    "workspace",
+    "skills",
+    "docs",
+    "_split.py",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "C4",    # flake8-comprehensions
+    "FA",    # flake8-future-annotations
+]
+ignore = [
+    "E501",   # line too long (formatter handles)
+    "B008",   # function call in default argument (FastAPI pattern)
+    "B904",   # raise from in except (many intentional bare raises)
+    "SIM108", # ternary instead of if-else (readability)
+    "E741",   # ambiguous variable name (existing code uses l, I, O)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"agent_core/__init__.py" = ["F401", "F403"]  # re-export facade
+"code.py" = ["F401", "F403"]                  # backward-compat facade
+"tests/*" = ["F401"]                          # test fixtures
+
+[tool.ruff.lint.isort]
+known-first-party = ["agent_core", "agent_gateway", "code"]
+force-single-line = false
+combine-as-imports = true
+
+# ── Mypy: gradual type checking ──
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true
+exclude = [
+    "\\.venv/",
+    "frontend/",
+    "frontend_vite/",
+    "workspace/",
+    "_split\\.py",
+]
+
+[[tool.mypy.overrides]]
+module = "agent_gateway.*"
+disallow_untyped_defs = false  # enable gradually
+
+[[tool.mypy.overrides]]
+module = "agent_core.*"
+disallow_untyped_defs = false  # enable gradually
+
+# ── Pytest ──
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
