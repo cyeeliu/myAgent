@@ -33,29 +33,34 @@ def rebuild_agent_data() -> None:
             if not target.exists():
                 shutil.copytree(d, target)
 
-    # ── memory: .memory/ holds config json ──
+    # ── memory: ensure .memory/ dir exists (no config.json — CLAUDE.md
+    # invariant: "there is no config.json; do not seed one") ──
     mem_dir = ws_root / ".memory"
     mem_dir.mkdir(parents=True, exist_ok=True)
-    mem_cfg = mem_dir / "config.json"
-    if not mem_cfg.exists():
-        mem_cfg.write_text(json.dumps({
-            "enabled": True,
-            "types": ["user", "feedback", "project", "reference"],
-            "consolidate_threshold": 10,
-            "index_file": "MEMORY.md",
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ── walk workspace → Record<folder_key, FileInfo[]> ──
     # Skip hidden dirs/files except .memory. Other dot-dirs stay hidden.
+    # Bounded: max 10k files, max 15 dir depth, no symlink following.
     folder_data: dict[str, list[dict]] = {}
+    _MAX_FILES = 10_000
+    _MAX_DEPTH = 15
+    file_count = 0
     for entry in sorted(ws_root.rglob("*")):
+        if file_count >= _MAX_FILES:
+            break
         if not entry.is_file() or entry.name.startswith("."):
             continue
         parts = entry.relative_to(ws_root).parts
+        if len(parts) > _MAX_DEPTH:
+            continue
         if any(p.startswith(".") and p != ".memory" for p in parts):
             continue
         if entry.name == "agent-data.json":
             continue  # avoid self-reference
+        # Skip node_modules and other heavy dirs.
+        if any(p == "node_modules" or p == ".git" for p in parts):
+            continue
+        file_count += 1
         rel = entry.relative_to(ws_root).as_posix()
         rel_parent = entry.parent.relative_to(ws_root).as_posix()
         folder_key = "workspace" if rel_parent == "." else f"workspace/{rel_parent}"

@@ -199,8 +199,34 @@ class CheckpointManager:
             pass
 
 
-# Singleton — one checkpoint manager per process.  Session isolation is via
-# session_dir() in the persist path.  In the gateway each session runs in
-# its own worker thread with session_dir() bound, so the singleton is
-# effectively per-session.
-manager = CheckpointManager()
+# Per-session manager registry.  Each session gets its own CheckpointManager
+# instance, keyed by the session_dir() path.  This prevents cross-session undo
+# history pollution when multiple sessions run in the same process (gateway).
+_managers: dict[str, "CheckpointManager"] = {}
+
+
+def get_manager() -> "CheckpointManager":
+    """Return the checkpoint manager for the current session_dir().
+
+    Each session gets its own instance, isolated by the persist path.
+    A fallback 'default' key is used when session_dir() is not set."""
+    try:
+        key = str(session_dir())
+    except Exception:
+        key = "default"
+    if key not in _managers:
+        _managers[key] = CheckpointManager()
+    return _managers[key]
+
+
+# Backward-compat: ``manager`` property delegates to the per-session instance.
+# Code that does ``from agent_core.checkpoint import manager`` and calls
+# ``manager.undo()`` etc. still works — it routes to the current session's
+# manager via get_manager().
+class _ManagerProxy:
+    """Proxy that delegates all attribute access to the current session's
+    CheckpointManager instance."""
+    def __getattr__(self, name):
+        return getattr(get_manager(), name)
+
+manager = _ManagerProxy()

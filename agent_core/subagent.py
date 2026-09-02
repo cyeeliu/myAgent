@@ -77,13 +77,21 @@ def spawn_subagent(description: str, agent: str | None = None) -> str:
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            blocked = trigger_hooks("PreToolUse", block)
+            # Run the same permission gate as the main loop — subagents must
+            # not bypass deny-list, path escape, or plan-mode checks.
+            from agent_core.hooks import check_permission
+            from agent_core.session import CliPermission
+            blocked = check_permission(block, CliPermission())
             if blocked:
                 output = str(blocked)
             else:
-                handler = sub_handlers.get(block.name)
-                output = call_tool_handler(handler, block.input, block.name)
-                trigger_hooks("PostToolUse", block, output)
+                blocked = trigger_hooks("PreToolUse", block)
+                if blocked:
+                    output = str(blocked)
+                else:
+                    handler = sub_handlers.get(block.name)
+                    output = call_tool_handler(handler, block.input, block.name)
+                    trigger_hooks("PostToolUse", block, output)
             results.append({"type": "tool_result",
                             "tool_use_id": block.id,
                             "content": str(output)})

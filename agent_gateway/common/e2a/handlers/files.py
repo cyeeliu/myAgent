@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from agent_core import workdir
 
@@ -17,9 +18,18 @@ async def path_get(req, ctx: HandlerContext):
 
 @handler(ReqMethod.FILES_LIST)
 async def files_list(req, ctx: HandlerContext):
-    path = req.params.get("path") or str(workdir())
+    requested_path = req.params.get("path") or str(workdir())
+    # Security: constrain listing to the workspace root. Reject paths that
+    # escape via .. or absolute paths outside the workspace.
+    ws_root = Path(workdir()).resolve()
     try:
-        entries = sorted(os.listdir(path))
+        target = Path(requested_path).resolve()
+        target.relative_to(ws_root)
+    except (ValueError, OSError):
+        return AgentResponse(req.request_id, ok=False,
+                             error="path outside workspace")
+    try:
+        entries = sorted(os.listdir(target))
     except OSError as e:
         return AgentResponse(req.request_id, ok=False, error=str(e))
-    return AgentResponse(req.request_id, payload={"files": entries, "path": path})
+    return AgentResponse(req.request_id, payload={"files": entries, "path": str(target)})

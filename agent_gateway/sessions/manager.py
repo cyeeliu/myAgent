@@ -7,6 +7,7 @@ the in-memory ``_sessions`` dict is a cache of live (transport-attached) session
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 import uuid
@@ -20,6 +21,14 @@ from ._constants import PERMISSION_TIMEOUT, SESSION_STATE_ROOT
 from .gateway_session import GatewaySession, PipeSink, ChatRecordSink
 from .replay import synthesize_frames, _last_todos_from_record
 from .files import _write_session_files
+
+# session_id must be safe path characters only — no /, \, .., etc.
+_SID_RE = re.compile(r'^[A-Za-z0-9_-]+$')
+
+
+def validate_session_id(sid: str) -> bool:
+    """Return True if sid is a safe session identifier (no path traversal)."""
+    return bool(sid) and bool(_SID_RE.match(sid))
 
 
 class SessionManager:
@@ -111,6 +120,8 @@ class SessionManager:
                sid: Optional[str] = None) -> GatewaySession:
         """Create a new live session. If `sid` is given, hydrate from the DB
         (used to revive a persisted session); otherwise mint a new id and row."""
+        if sid is not None and not validate_session_id(sid):
+            raise ValueError(f"invalid session_id: {sid!r} (must match [A-Za-z0-9_-]+)")
         if sid is None:
             sid = uuid.uuid4().hex[:16]
         loop = loop or asyncio.get_event_loop()
@@ -139,6 +150,8 @@ class SessionManager:
     def get_or_hydrate(self, sid: str, loop: asyncio.AbstractEventLoop = None) -> Optional[GatewaySession]:
         """Return the live session for sid, hydrating from the DB if it exists
         there but isn't currently in memory. None if neither."""
+        if not validate_session_id(sid):
+            return None
         with self._lock:
             gs = self._sessions.get(sid)
         if gs is not None:

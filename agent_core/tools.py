@@ -429,9 +429,67 @@ def _html_to_text(html: str) -> str:
     return "\n".join(ln for ln in lines if ln)
 
 
+def _is_safe_ip(ip) -> bool:
+    """Return False for loopback, private, link-local, multicast, unspecified."""
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(ip)
+    except (ValueError, TypeError):
+        return True  # not an IP literal — allow (hostname resolved separately)
+    if addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_multicast:
+        return False
+    if addr.is_unspecified:  # 0.0.0.0 / ::
+        return False
+    return True
+
+
+def _check_ssrf(url: str) -> str | None:
+    """Validate URL for SSRF safety. Returns error message or None if safe.
+
+    Rejects loopback, private, link-local, multicast, and unspecified IPs.
+    Resolves the hostname and checks each resolved IP."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if not host:
+            return "no hostname in URL"
+        # Check if host is a literal IP.
+        try:
+            ip = ipaddress.ip_address(host)
+            if not _is_safe_ip(ip):
+                return f"unsafe IP: {ip}"
+        except ValueError:
+            pass  # hostname — resolve below
+        # Resolve hostname and check each IP.
+        try:
+            infos = socket.getaddrinfo(host, None)
+            for family, _, _, _, sockaddr in infos:
+                ip_str = sockaddr[0]
+                try:
+                    ip = ipaddress.ip_address(ip_str)
+                except ValueError:
+                    continue
+                if not _is_safe_ip(ip):
+                    return f"unsafe resolved IP: {ip} for host {host}"
+        except socket.gaierror:
+            pass  # can't resolve — allow (will fail at fetch time)
+        return None
+    except Exception as e:
+        return f"URL parse error: {e}"
+
+
 def run_web_fetch(url: str, prompt: str, max_chars: int = 12000) -> str:
     """Fetch a URL (15s timeout, 5MB cap, follow redirects, upgrade http→https),
-    convert HTML→markdown-ish text, return up to max_chars + the prompt note."""
+    convert HTML→markdown-ish text, return up to max_chars + the prompt note.
+
+    SSRF-protected: rejects URLs pointing to private/loopback/link-local/metadata IPs."""
+    # SSRF check before any network access.
+    ssrf_err = _check_ssrf(url)
+    if ssrf_err:
+        return f"Error: URL rejected (SSRF protection): {ssrf_err}"
     try:
         if url.startswith("http://"):
             url = "https://" + url[len("http://"):]

@@ -36,6 +36,11 @@ _PLAN_MODE_BASH_DENY = [
     "pip install", "pip uninstall", "pip3 install", "python -m pip", "uv add", "uv pip",
     "docker ", "docker-compose", "kill ", "pkill", "curl -X", "wget ", "scp ", "rsync ",
     "sed -i", "awk -i", "truncate", "ln -s", "tar ",
+    # Interpreter calls that can write files — bypasses the file-tool gate.
+    "python -c", "python3 -c", "python -C", "python3 -C",
+    "node -e", "node --eval", "node -p", "node --print",
+    "perl -e", "perl -E", "ruby -e", "ruby -E",
+    "bash -c", "sh -c", "zsh -c", "eval ",
 ]
 
 def _ask(permission, events, reason, detail, block):

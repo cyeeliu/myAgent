@@ -1,6 +1,27 @@
 #!/usr/bin/env python3
 """One-shot splitter: carve code.py into agent_core/*.py verbatim, then auto-resolve
-cross-module imports by scanning referenced names against the global def table."""
+cross-module imports by scanning referenced names against the global def table.
+
+SAFETY GUARD: This script reads code.py and overwrites all agent_core/*.py modules.
+If code.py is now a thin re-export facade (which it is — the real logic lives in
+agent_core/), running this script would DESTROY all hand-edited modules. The guard
+below detects the facade and refuses to run. Use --force to override (after restoring
+code.py from git with the full single-file source).
+"""
+import sys
+# ── Facade detection guard ──
+_src_check = Path('code.py').read_text() if Path('code.py').exists() else ""
+# A facade is typically < 200 lines and consists mostly of re-exports.
+if len(_src_check.splitlines()) < 200 and "--force" not in sys.argv:
+    print("REFUSING TO RUN: code.py appears to be a thin re-export facade",
+          f"({len(_src_check.splitlines())} lines).", file=sys.stderr)
+    print("Running _split.py now would OVERWRITE all hand-edited agent_core/*.py",
+          "modules with re-generated content, destroying your changes.",
+          file=sys.stderr)
+    print("To proceed: restore code.py from git with the full single-file source,",
+          "then re-run. Or use --force to override (DANGEROUS).", file=sys.stderr)
+    sys.exit(1)
+
 import ast, re, json, os
 from pathlib import Path
 

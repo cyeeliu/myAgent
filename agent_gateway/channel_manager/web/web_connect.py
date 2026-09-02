@@ -86,6 +86,13 @@ class WebChannel(BaseChannel):
                               api_base: Optional[str] = Query(default=None),
                               model: Optional[str] = Query(default=None),
                               project_path: Optional[str] = Query(default=None)):
+            # WS auth: when GATEWAY_API_KEY is set, require it as ?api_key= query
+            # param or in the initial subprotocol header.
+            import os
+            _gw_key = os.environ.get("GATEWAY_API_KEY", "")
+            if _gw_key and api_key != _gw_key:
+                await ws.close(code=4001, reason="unauthorized")
+                return
             await self._handle_connection(ws, session_id, last_seq)
 
     async def _handle_connection(self, ws: WebSocket, session_id: Optional[str],

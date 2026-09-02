@@ -1,5 +1,6 @@
 """agent_core.compaction — extracted from code.py (s20 comprehensive agent)."""
 from pathlib import Path
+import copy
 import json
 import time
 from agent_core import adapter
@@ -78,7 +79,13 @@ def tool_result_budget(messages: list, max_bytes: int = 200_000) -> list:
     total = sum(len(str(b.get("content", ""))) for _, b in blocks)
     if total <= max_bytes:
         return messages
-    for _, block in sorted(blocks,
+    # Build a NEW content list with NEW block dicts — never mutate the shared
+    # block in-place (it's the same object in session.record via append_both).
+    new_content = [copy.deepcopy(b) if isinstance(b, dict) else b for b in content]
+    new_blocks = [(i, b) for i, b in enumerate(new_content)
+                  if isinstance(b, dict) and b.get("type") == "tool_result"]
+    total = sum(len(str(b.get("content", ""))) for _, b in new_blocks)
+    for _, block in sorted(new_blocks,
                            key=lambda pair: len(str(pair[1].get("content", ""))),
                            reverse=True):
         if total <= max_bytes:
@@ -86,8 +93,10 @@ def tool_result_budget(messages: list, max_bytes: int = 200_000) -> list:
         text = str(block.get("content", ""))
         block["content"] = persist_large_output(
             block.get("tool_use_id", "unknown"), text)
-        total = sum(len(str(b.get("content", ""))) for _, b in blocks)
-    return messages
+        total = sum(len(str(b.get("content", ""))) for _, b in new_blocks)
+    # Return a new message list with the last message's content replaced.
+    new_last = {**last, "content": new_content}
+    return messages[:-1] + [new_last]
 
 def snip_compact(messages: list, max_messages: int = 50) -> list:
     if len(messages) <= max_messages:
@@ -111,10 +120,32 @@ def micro_compact(messages: list) -> list:
     tool_results = collect_tool_results(messages)
     if len(tool_results) <= KEEP_RECENT_TOOL_RESULTS:
         return messages
-    for _, _, block in tool_results[:-KEEP_RECENT_TOOL_RESULTS]:
+    # Build NEW message dicts + NEW content lists + NEW block dicts — never
+    # mutate the shared block in-place (it's the same object in session.record).
+    compact_indices = set()
+    for mi, bi, block in tool_results[:-KEEP_RECENT_TOOL_RESULTS]:
         if len(str(block.get("content", ""))) > 120:
-            block["content"] = "[Earlier tool result compacted. Re-run if needed.]"
-    return messages
+            compact_indices.add((mi, bi))
+    if not compact_indices:
+        return messages
+    new_messages = []
+    for mi, msg in enumerate(messages):
+        if mi not in {m for m, _ in compact_indices}:
+            new_messages.append(msg)
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            new_messages.append(msg)
+            continue
+        new_content = []
+        for bi, block in enumerate(content):
+            if (mi, bi) in compact_indices and isinstance(block, dict):
+                new_block = {**block, "content": "[Earlier tool result compacted. Re-run if needed.]"}
+                new_content.append(new_block)
+            else:
+                new_content.append(block)
+        new_messages.append({**msg, "content": new_content})
+    return new_messages
 
 def write_transcript(messages: list) -> Path:
     _transcript_dir().mkdir(parents=True, exist_ok=True)

@@ -22,16 +22,21 @@ _FILE_API_ROOT = REPO_ROOT
 
 
 def _resolve_under_root(rel: str) -> Optional[REPO_ROOT.__class__]:
-    """Resolve a frontend-relative path under the file-api root, confining
-    traversal. Returns None if the resolved path escapes the root.
+    """Resolve a frontend-relative path under an allowed root, confining
+    traversal. Returns None if the resolved path escapes the allowed roots.
 
-    The AgentPanel browses the real mounted workspace (/app/workspace, from
-    ~/.myAgent/workspace) under the frontend prefix `agent/workspace/...`.
-    Rewrite that prefix to the real workspace so file previews resolve there."""
+    Security: only ``agent/workspace/...`` (the mounted workspace) and
+    ``agent/sessions/...`` (session artifact files) are allowed. All other
+    paths — including bare ``.agents/model.json``, ``.env``, source files —
+    are rejected with 403. This prevents reading API keys and secrets."""
     import pathlib as _pathlib
     if not rel:
-        return _FILE_API_ROOT
+        # Root listing: allow workspace root only.
+        ws_root = (_FILE_API_ROOT / "workspace").resolve()
+        return ws_root
     _WS_PREFIX = "agent/workspace"
+    _SESS_PREFIX = "agent/sessions"
+    # Workspace branch: agent/workspace/...
     if rel == _WS_PREFIX or rel.startswith(_WS_PREFIX + "/"):
         sub = "" if rel == _WS_PREFIX else rel[len(_WS_PREFIX) + 1:]
         ws_root = (_FILE_API_ROOT / "workspace").resolve()
@@ -44,15 +49,21 @@ def _resolve_under_root(rel: str) -> Optional[REPO_ROOT.__class__]:
         except ValueError:
             return None
         return full
-    try:
-        full = (_FILE_API_ROOT / rel).resolve()
-    except (OSError, ValueError):
-        return None
-    try:
-        full.relative_to(_FILE_API_ROOT.resolve())
-    except ValueError:
-        return None
-    return full
+    # Session artifacts branch: agent/sessions/...
+    if rel == _SESS_PREFIX or rel.startswith(_SESS_PREFIX + "/"):
+        sub = "" if rel == _SESS_PREFIX else rel[len(_SESS_PREFIX) + 1:]
+        sess_root = (_FILE_API_ROOT / "agent" / "sessions").resolve()
+        try:
+            full = (sess_root / sub).resolve() if sub else sess_root
+        except (OSError, ValueError):
+            return None
+        try:
+            full.relative_to(sess_root)
+        except ValueError:
+            return None
+        return full
+    # All other paths (including .agents/, .env, source code) are forbidden.
+    return None
 
 
 def _decode_auto(raw: bytes) -> str:
@@ -93,13 +104,12 @@ async def file_api_list_files(dir: str = ""):
     except OSError:
         return {"files": []}
     for entry in entries:
-        try:
-            rel = entry.relative_to(_FILE_API_ROOT)
-        except ValueError:
-            continue
+        # Build the full frontend-relative path so the frontend can pass it
+        # back to file-content. dir is the prefix (e.g. agent/workspace/skills).
+        entry_path = f"{dir}/{entry.name}" if dir else entry.name
         files.append({
             "name": entry.name,
-            "path": str(rel),
+            "path": entry_path,
             "isMarkdown": entry.suffix.lower() == ".md" if entry.is_file() else False,
             "isDirectory": entry.is_dir(),
         })

@@ -124,9 +124,19 @@ def resolve_install_dst(slug: str, source: str) -> tuple[Path, bool]:
       e.g. a `legal` from clawhub already there when skillhub's `legal` is
       installed) → ``(<slug>@<source>, False)`` so both coexist instead of the
       second install failing with "already installed".
+
+    Security: rejects slugs containing path traversal characters (.., /, \\).
     """
+    # Path traversal protection: reject slugs that could escape skills_dir.
+    if not slug or ".." in slug or "/" in slug or "\\" in slug:
+        raise ValueError(f"unsafe skill slug: {slug!r}")
     skills_dir = _skills_dir()
     base = skills_dir / slug
+    # Verify the resolved path stays under skills_dir.
+    try:
+        base.resolve().relative_to(skills_dir.resolve())
+    except ValueError:
+        raise ValueError(f"skill slug escapes skills dir: {slug!r}")
     if not base.exists():
         return base, False
     existing_mp = _read_marketplace_manifest(base)
@@ -374,6 +384,9 @@ def install_skill(spec: str, force: bool = False) -> dict:
     name = spec.split("@", 1)[0].strip()
     if not name:
         return {"success": False, "detail": "missing name"}
+    # Path traversal protection.
+    if ".." in name or "/" in name or "\\" in name:
+        return {"success": False, "detail": f"unsafe skill name: {name!r}"}
     dst, same = resolve_install_dst(name, "builtin")
     if same and not force:
         return {"success": True, "name": name, "detail": "already installed"}
@@ -398,6 +411,9 @@ def import_local_skill(path: str, force: bool = False) -> dict:
         raw = src.read_text("utf-8", "replace")
         meta, _ = _parse_frontmatter(raw)
         name = meta.get("name") or src.stem
+        # Path traversal protection on derived name.
+        if ".." in name or "/" in name or "\\" in name:
+            return {"success": False, "detail": f"unsafe skill name: {name!r}"}
         dst, same = resolve_install_dst(name, "local")
         if same and not force:
             return {"success": False, "detail": "already installed"}
@@ -409,6 +425,9 @@ def import_local_skill(path: str, force: bool = False) -> dict:
     raw = (src / "SKILL.md").read_text("utf-8", "replace")
     meta, _ = _parse_frontmatter(raw)
     name = meta.get("name") or src.name
+    # Path traversal protection on derived name.
+    if ".." in name or "/" in name or "\\" in name:
+        return {"success": False, "detail": f"unsafe skill name: {name!r}"}
     dst, same = resolve_install_dst(name, "local")
     if same and not force:
         return {"success": False, "detail": "already installed"}

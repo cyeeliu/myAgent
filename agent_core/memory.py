@@ -16,6 +16,7 @@ Storage architecture:
 import json
 import os
 import re
+import threading
 import time
 from agent_core import adapter
 from agent_core.blocks import extract_text
@@ -27,6 +28,11 @@ _MEM_DBG = os.environ.get("AGENT_DEBUG", "").strip().lower() in ("1", "true", "y
 MEMORY_TYPES = ["user", "feedback", "project", "reference"]
 
 CONSOLIDATE_THRESHOLD = 10
+
+# Cross-thread lock for memory directory mutations. consolidate_memories and
+# extract_memories run in fire-and-forget threads; without serialization, a
+# consolidate's delete-all can wipe another session's extract writes.
+_memory_lock = threading.Lock()
 
 def _memory_dir():
     return workspace_dir() / ".memory"
@@ -134,6 +140,12 @@ def write_memory_file(name: str, mem_type: str, description: str, body: str):
     _rebuild_index()
     _invalidate_cache()
     return filepath
+
+def _write_memory_file_raw(filepath, name: str, mem_type: str, description: str, body: str):
+    """Write a memory file to a specific path (used by atomic consolidate)."""
+    filepath.write_text(
+        f"---\nname: {name}\ndescription: {description}\ntype: {mem_type}\n---\n\n{body}\n"
+    )
 
 def _rebuild_index():
     """Rebuild MEMORY.md (one line per memory) from all memory files."""
@@ -355,47 +367,81 @@ def extract_memories(messages: list) -> int:
     return count
 
 def consolidate_memories() -> None:
-    """When the file count grows past the threshold, merge/dedupe via LLM."""
-    files = list_memory_files()
-    if len(files) < CONSOLIDATE_THRESHOLD:
-        return
+    """When the file count grows past the threshold, merge/dedupe via LLM.
 
-    catalog = "\n\n".join(
-        f"## {f['filename']}\nname: {f['name']}\ndescription: {f['description']}\n{f['body']}"
-        for f in files)
-    out = _memory_llm(
-        "Consolidate the following memory files. Rules:\n"
-        "1. Merge duplicates into one\n"
-        "2. Remove outdated/contradicted memories\n"
-        "3. Keep the total under 30 memories\n"
-        "4. Preserve important user preferences above all\n"
-        "Return a JSON array. Each item: {name, type, description, body}.\n\n"
-        f"{catalog[:16000]}",
-        max_tokens=3000)
-    match = re.search(r'\[.*\]', out, re.DOTALL)
-    if not match:
-        return
-    try:
-        items = json.loads(match.group())
-    except Exception:
-        return
+    Thread-safe: holds _memory_lock for the entire operation. Uses atomic
+    write-new-then-delete-old to avoid losing memories if the LLM returns
+    an empty or partial result."""
+    with _memory_lock:
+        files = list_memory_files()
+        if len(files) < CONSOLIDATE_THRESHOLD:
+            return
 
-    for f in _memory_dir().glob("*.md"):
-        if f.name != "MEMORY.md":
+        catalog = "\n\n".join(
+            f"## {f['filename']}\nname: {f['name']}\ndescription: {f['description']}\n{f['body']}"
+            for f in files)
+        out = _memory_llm(
+            "Consolidate the following memory files. Rules:\n"
+            "1. Merge duplicates into one\n"
+            "2. Remove outdated/contradicted memories\n"
+            "3. Keep the total under 30 memories\n"
+            "4. Preserve important user preferences above all\n"
+            "Return a JSON array. Each item: {name, type, description, body}.\n\n"
+            f"{catalog[:16000]}",
+            max_tokens=3000)
+        match = re.search(r'\[.*\]', out, re.DOTALL)
+        if not match:
+            return
+        try:
+            items = json.loads(match.group())
+        except Exception:
+            return
+
+        # Guard: if the LLM returned an empty array, do NOT delete all memories.
+        # An empty array is a valid JSON response but should not cause data loss.
+        if not items:
+            return
+
+        # Atomic consolidate: write new files to temp names first, then delete
+        # old files, then rename temps to final names. This avoids a window
+        # where all memories are deleted but the new writes haven't happened.
+        mem_dir = _memory_dir()
+        old_names = {f.name for f in mem_dir.glob("*.md") if f.name != "MEMORY.md"}
+        new_names: set[str] = set()
+        for mem in items:
+            name = mem.get("name", f"memory_{int(time.time())}")
+            mem_type = mem.get("type", "user")
+            if mem_type not in MEMORY_TYPES:
+                mem_type = "user"
+            desc = mem.get("description", "")
+            body = mem.get("body", "")
+            if desc and body:
+                # Sanitize name for filesystem safety.
+                safe_name = re.sub(r'[^A-Za-z0-9_-]', '_', name)[:64]
+                if not safe_name:
+                    safe_name = f"memory_{int(time.time())}"
+                fname = f"{safe_name}.md"
+                # Write to temp file first.
+                tmp_fname = f".{fname}.tmp"
+                try:
+                    _write_memory_file_raw(mem_dir / tmp_fname, name, mem_type, desc, body)
+                    new_names.add(fname)
+                except Exception:
+                    pass
+        # Now delete old files that aren't in the new set.
+        for old_name in old_names:
+            if old_name not in new_names:
+                try:
+                    (mem_dir / old_name).unlink()
+                except Exception:
+                    pass
+        # Rename temp files to final names.
+        for fname in new_names:
+            tmp = mem_dir / f".{fname}.tmp"
+            final = mem_dir / fname
             try:
-                f.unlink()
+                if tmp.exists():
+                    tmp.rename(final)
             except Exception:
                 pass
-    _invalidate_cache()
-    for mem in items:
-        name = mem.get("name", f"memory_{int(time.time())}")
-        mem_type = mem.get("type", "user")
-        if mem_type not in MEMORY_TYPES:
-            mem_type = "user"
-        desc = mem.get("description", "")
-        body = mem.get("body", "")
-        if desc and body:
-            try:
-                write_memory_file(name, mem_type, desc, body)
-            except Exception:
-                pass
+        _invalidate_cache()

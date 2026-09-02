@@ -4,11 +4,13 @@ Called once from ``create_app()`` to attach:
   - CORS middleware
   - API versioning middleware (``/api/v1/*`` → ``/api/*`` path rewrite)
   - Request-ID injection middleware
+  - Gateway auth middleware (API-key header when GATEWAY_API_KEY is set)
   - Global exception handlers for the ``GatewayError`` hierarchy
 """
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 
 from fastapi import FastAPI, Request
@@ -25,15 +27,47 @@ _log = logging.getLogger(__name__)
 API_VERSION = "v1"
 _VERSION_PREFIX = f"/api/{API_VERSION}/"
 
+# Gateway API key for auth. When set, all /api/* and /file-api/* requests must
+# include it as ``Authorization: Bearer <key>`` or ``X-Gateway-Key: <key>``.
+# When unset (local dev), auth is disabled.
+_GATEWAY_API_KEY = os.environ.get("GATEWAY_API_KEY", "")
+
+
+def _check_auth(request: Request) -> bool:
+    """Return True if the request is authorized. When GATEWAY_API_KEY is unset,
+    auth is disabled (backward compat for local dev)."""
+    if not _GATEWAY_API_KEY:
+        return True
+    # Accept either Authorization: Bearer <key> or X-Gateway-Key: <key>
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer ") and auth_header[7:] == _GATEWAY_API_KEY:
+        return True
+    x_key = request.headers.get("X-Gateway-Key", "")
+    if x_key == _GATEWAY_API_KEY:
+        return True
+    return False
+
 
 def setup_middleware(app: FastAPI) -> None:
-    """Attach CORS + API-version + request-ID middleware to the app."""
+    """Attach CORS + API-version + request-ID + auth middleware to the app."""
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],          # tighten per-deploy
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        """Reject unauthenticated requests to /api/* and /file-api/* when
+        GATEWAY_API_KEY is configured."""
+        path = request.url.path
+        if (path.startswith("/api/") or path.startswith("/file-api/")) and not _check_auth(request):
+            return JSONResponse(
+                status_code=401,
+                content={"error": "unauthorized", "detail": "Missing or invalid API key"},
+            )
+        return await call_next(request)
 
     @app.middleware("http")
     async def api_version_middleware(request: Request, call_next):

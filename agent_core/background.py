@@ -27,6 +27,14 @@ background_results: dict[str, str] = {}
 background_lock = threading.Lock()
 
 
+def _session_key() -> str:
+    """Return a per-session isolation key for background task scoping."""
+    try:
+        return str(session_dir())
+    except Exception:
+        return "default"
+
+
 def is_slow_operation(tool_name: str, tool_input: dict) -> bool:
     if tool_name != "bash":
         return False
@@ -56,10 +64,12 @@ def start_background_task(block, handlers: dict, session=None) -> str:
     Non-bash background tools (none currently) fall back to the old in-thread
     handler approach so the dispatcher stays general."""
     global _bg_counter
-    _bg_counter += 1
-    bg_id = f"bg_{_bg_counter:04d}"
+    with background_lock:
+        _bg_counter += 1
+        bg_id = f"bg_{_bg_counter:04d}"
     command = block.input.get("command", block.name)
     cwd = str(workdir())
+    sk = _session_key()
 
     if block.name != "bash":
         return _start_background_handler(block, handlers, session, bg_id, command)
@@ -92,6 +102,7 @@ def start_background_task(block, handlers: dict, session=None) -> str:
                 "tool_use_id": block.id, "command": command,
                 "status": "completed", "pid": None,
                 "log": str(out_path), "code": -1, "started_at": time.time(),
+                "_session_key": sk,
             }
             background_results[bg_id] = f"Error starting command: {e}"
         return bg_id
@@ -101,6 +112,7 @@ def start_background_task(block, handlers: dict, session=None) -> str:
             "tool_use_id": block.id, "command": command,
             "status": "running", "pid": proc.pid,
             "log": str(out_path), "code": None, "started_at": time.time(),
+            "_session_key": sk,
         }
 
     def monitor():
@@ -141,6 +153,7 @@ def _start_background_handler(block, handlers, session, bg_id, command):
             "tool_use_id": block.id, "command": command,
             "status": "running", "pid": None,
             "log": None, "code": None, "started_at": time.time(),
+            "_session_key": _session_key(),
         }
 
     def worker():
@@ -200,10 +213,15 @@ def _notify(session, bg_id, command, code, output):
 def collect_background_results() -> list[str]:
     """Pop completed tasks and return notification strings for the model. Full
     output (capped) is included so the agent can act on it without a separate
-    task_output call."""
+    task_output call.
+
+    Only tasks belonging to the current session (via session_dir()) are
+    collected — prevents cross-session result leakage in multi-session gateways."""
+    sk = _session_key()
     with background_lock:
         ready = [bg_id for bg_id, task in background_tasks.items()
-                 if task["status"] in ("completed", "killed")]
+                 if task["status"] in ("completed", "killed")
+                 and task.get("_session_key", "default") == sk]
     notifications = []
     for bg_id in ready:
         with background_lock:

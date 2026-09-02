@@ -128,6 +128,12 @@ def main():
                       context=update_context({}, []))
     threading.Thread(target=cron_autorun_loop,
                      args=(session,), daemon=True).start()
+    # Start the cron scheduler (evaluates cron expressions and enqueues due
+    # jobs) + restore durable jobs from disk. Without this, schedule_job accepts
+    # tasks but they never fire (cron_queue stays empty).
+    from agent_core.cron import cron_scheduler_loop, load_durable_jobs
+    load_durable_jobs()
+    threading.Thread(target=cron_scheduler_loop, daemon=True).start()
     while True:
         try:
             query = input(PROMPT)
