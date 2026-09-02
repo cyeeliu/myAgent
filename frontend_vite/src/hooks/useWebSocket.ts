@@ -1898,11 +1898,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }),
       webClient.on('chat.tool_call_delta', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
-        const toolCallId = payload?.id;
+        const toolCallId = payload?.id as string | undefined;
         if (!toolCallId) return;
         const partialArgs = payload?.arguments;
         if (partialArgs && typeof partialArgs === 'object') {
-          updateToolCallArguments(toolCallId, partialArgs);
+          updateToolCallArguments(toolCallId, partialArgs as Record<string, unknown>);
         }
       }),
       webClient.on('chat.tool_result', ({ payload }) => {
