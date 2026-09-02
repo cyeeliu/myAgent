@@ -17,6 +17,7 @@ _KIND_MAP = {
     "token": "chat.delta",
     "text": "chat.notice",
     "tool_start": "chat.tool_call",
+    "tool_start_delta": "chat.tool_call_delta",
     "tool_result": "chat.tool_result",
     "error": "chat.error",
     "permission_request": "chat.ask_user_question",
@@ -89,6 +90,20 @@ def _remap_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         # arguments may be a dict; the frontend's parseArguments accepts both
         # JSON strings and objects, so pass through as-is.
         return {"id": tool_id, "name": name, "arguments": args}
+    if kind == "tool_start_delta":
+        # Partial tool_use delta — emitted during streaming so the frontend
+        # can render tool arguments incrementally as they arrive.
+        tool_id = payload.get("id")
+        name = payload.get("name")
+        if tool_id and name:
+            _remember_tool_name(tool_id, name)
+        return {
+            "id": tool_id,
+            "name": name,
+            "arguments": payload.get("input_partial"),
+            "partial": True,
+            "index": payload.get("index"),
+        }
     if kind == "tool_result":
         tool_id = payload.get("id")
         content = payload.get("content")

@@ -129,7 +129,8 @@ def _to_openai_tools(tools) -> list[dict] | None:
     }} for t in tools]
 
 def chat_create(model, system=None, messages=None, tools=None,
-                max_tokens=8000, stream=False, events=None, timeout=None):
+                max_tokens=8000, stream=False, events=None, timeout=None,
+                response_format=None, tool_choice=None):
     """Call the OpenAI-compatible chat endpoint and return an Anthropic-shaped
     response ({content: [blocks], stop_reason}) so the rest of the agent stays
     provider-agnostic.
@@ -139,7 +140,14 @@ def chat_create(model, system=None, messages=None, tools=None,
     stream=False (CLI path), a single non-streaming call is made — preserving
     the original CLI behavior. `timeout` (seconds) is forwarded to the
     non-streaming call only — used by memory's one-shot selection/extraction
-    calls so a slow reasoning model can't stall the turn for 20s."""
+    calls so a slow reasoning model can't stall the turn for 20s.
+
+    `response_format` (dict): OpenAI response_format parameter for structured
+    output (e.g. {"type": "json_object"} or a JSON schema).  Passed through
+    only when the model supports it.
+    `tool_choice` (str|dict): OpenAI tool_choice parameter — "auto", "required",
+    "none", or {"type": "function", "function": {"name": "..."}} to force a
+    specific tool."""
     oai_msgs = _to_openai_messages(system, messages or [])
     kwargs = {"model": model,
               "messages": oai_msgs,
@@ -147,6 +155,10 @@ def chat_create(model, system=None, messages=None, tools=None,
     oai_tools = _to_openai_tools(tools)
     if oai_tools:
         kwargs["tools"] = oai_tools
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+    if tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
 
     if not stream:
         if timeout is not None:
@@ -246,6 +258,19 @@ def chat_create(model, system=None, messages=None, tools=None,
                     slot["name"] = tc.function.name
                 if tc.function and tc.function.arguments:
                     slot["arguments"] += tc.function.arguments
+                    # Emit partial tool_use delta so the frontend can render
+                    # tool arguments incrementally as they stream in.
+                    if events is not None:
+                        try:
+                            partial_args = json.loads(slot["arguments"])
+                        except json.JSONDecodeError:
+                            partial_args = {"_raw": slot["arguments"]}
+                        events.emit("tool_start_delta", {
+                            "index": idx,
+                            "id": slot["id"],
+                            "name": slot["name"],
+                            "input_partial": partial_args,
+                        })
         if chunk.choices[0].finish_reason:
             finish_reason = chunk.choices[0].finish_reason
 

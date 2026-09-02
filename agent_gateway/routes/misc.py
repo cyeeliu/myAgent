@@ -70,3 +70,18 @@ async def get_mcp(sid: Optional[str] = None):
         }
         for c in clients.values()
     ]
+
+
+@router.get("/api/metrics")
+async def get_metrics():
+    """Tracing / observability metrics: span counts, latency stats, token
+    totals, and per-span-type breakdowns."""
+    from agent_core.tracing import tracer
+    return tracer.get_metrics()
+
+
+@router.get("/api/metrics/spans")
+async def get_recent_spans(limit: int = 100):
+    """Recent tracing spans (most recent first)."""
+    from agent_core.tracing import tracer
+    return tracer.get_recent_spans(limit=limit)

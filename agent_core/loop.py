@@ -1,4 +1,5 @@
 """agent_core.loop — extracted from code.py (s20 comprehensive agent)."""
+import concurrent.futures
 import sys
 import threading
 import time
@@ -19,7 +20,8 @@ from agent_core.prompt import assemble_system_prompt, invalidate_section_cache
 from agent_core.recovery import RecoveryState, is_prompt_too_long_error, with_retry
 from agent_core.session import Session
 from agent_core.tasks import has_active_todos
-from agent_core.tools import call_tool_handler
+from agent_core.tools import call_tool_handler, is_readonly_tool
+from agent_core.tracing import tracer as _tracer
 
 
 def call_llm(messages: list, context: dict, tools: list,
@@ -81,6 +83,7 @@ def agent_loop(session: Session):
     _phase("load_memories")
 
     while True:
+        _turn_span = _tracer.start_span("agent_turn")
         # One cycle: inject scheduled/background work, prepare context, call
         # the model, execute tool_use blocks, append tool_results, repeat.
         # Re-read the model each turn so an online config change takes effect
@@ -88,6 +91,7 @@ def agent_loop(session: Session):
         state.current_model = model_config.model()
         if session.interrupted:
             session.emit("done", {"reason": "interrupted"})
+            _tracer.end_span(_turn_span, status="cancelled")
             return
         fired = consume_cron_queue()
         for job in fired:
@@ -116,9 +120,15 @@ def agent_loop(session: Session):
         _phase("update_context+assemble_tool_pool")
 
         try:
+            _llm_span = _tracer.start_span("llm_call", {
+                "model": state.current_model,
+                "stream": session.streaming,
+            }, parent_id=_turn_span.id)
             response = call_llm(messages, context, tools, state, max_tokens,
                                 events=session, stream=session.streaming)
+            _tracer.end_span(_llm_span)
         except Exception as e:
+            _tracer.end_span(_llm_span, status="error", error=str(e))
             if is_prompt_too_long_error(e) and not state.has_attempted_reactive_compact:
                 messages[:] = reactive_compact(messages)
                 state.has_attempted_reactive_compact = True
@@ -197,10 +207,20 @@ def agent_loop(session: Session):
 
             threading.Thread(target=_memory_background, daemon=True).start()
             session.emit("done", {})
+            _tracer.end_span(_turn_span)
             return
 
         results = []
         compacted_now = False
+
+        # ── Phase 1: pre-check all tool_use blocks serially ──
+        # Permission, PreToolUse hooks, and background dispatch are fast and
+        # may have side effects (emit events, start threads), so they run
+        # serially.  We build an action list: each entry is either
+        #   ("skip", block, output_str, blocked_bool)  — pre-check failed
+        #   ("compact", block)                         — compact, breaks loop
+        #   ("exec", block)                            — needs handler call
+        actions = []
         for block in response.content:
             if block.type != "tool_use":
                 continue
@@ -208,73 +228,135 @@ def agent_loop(session: Session):
                                         "input": block.input})
 
             if block.name == "compact":
-                messages[:] = compact_history(messages)
-                # /compact clears the section cache (parity with Claude Code's
-                # STATE.systemPromptSectionCache). The mtime/signature keys
-                # already auto-invalidate; this is belt-and-suspenders.
-                invalidate_section_cache()
-                # Internal marker — LLM only, not the chat record / live chat.
-                session.append_context({"role": "user",
-                                        "content": "[Compacted. Continue with summarized context.]"})
-                session.emit("compacted", {"reason": "explicit"})
-                compacted_now = True
-                break
+                actions.append(("compact", block))
+                continue
 
             blocked = check_permission(block, session.permission, events=session)
             if blocked:
-                results.append({"type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": str(blocked)})
-                session.emit("tool_result", {"id": block.id, "content": str(blocked),
-                                             "blocked": True})
+                actions.append(("skip", block, str(blocked), True))
                 continue
 
             blocked = trigger_hooks("PreToolUse", block)
             if blocked:
-                results.append({"type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": str(blocked)})
-                session.emit("tool_result", {"id": block.id, "content": str(blocked),
-                                             "blocked": True})
+                actions.append(("skip", block, str(blocked), True))
                 continue
 
             if should_run_background(block.name, block.input):
                 bg_id = start_background_task(block, handlers, session)
                 output = (f"[Background task {bg_id} started] "
                           "Result will arrive as a task_notification.")
+                actions.append(("skip", block, output, False))
+                continue
+
+            actions.append(("exec", block))
+
+        # ── Phase 2: execute ──
+        # Consecutive readonly "exec" blocks run in parallel via a thread
+        # pool; write blocks run serially to preserve ordering semantics.
+        # Results are collected in original action order.
+        _exec_outputs: dict[int, str] = {}  # action_index → output
+
+        ai = 0
+        while ai < len(actions):
+            kind = actions[ai][0]
+
+            if kind == "compact":
+                block = actions[ai][1]
+                messages[:] = compact_history(messages)
+                invalidate_section_cache()
+                session.append_context({"role": "user",
+                                        "content": "[Compacted. Continue with summarized context.]"})
+                session.emit("compacted", {"reason": "explicit"})
+                compacted_now = True
+                break
+
+            if kind == "skip":
+                block, output, blocked = actions[ai][1], actions[ai][2], actions[ai][3]
                 results.append({"type": "tool_result",
                                 "tool_use_id": block.id,
                                 "content": output})
-                session.emit("tool_result", {"id": block.id, "content": output})
+                session.emit("tool_result", {"id": block.id, "content": output,
+                                             "blocked": blocked})
+                ai += 1
                 continue
 
-            handler = handlers.get(block.name)
-            output = call_tool_handler(handler, block.input, block.name)
-            trigger_hooks("PostToolUse", block, output)
-            session.emit("tool_result", {"id": block.id, "content": output})
+            # kind == "exec"
+            block = actions[ai][1]
 
-            if block.name == "todo_write":
-                session.rounds_since_todo = 0
-                # Push the new todo list to the frontend TodoList panel. The
-                # handler (run_todo_write) updated session.todos via set_todos;
-                # emit a `todo` event carrying the frontend-shaped payload so
-                # the panel re-renders without waiting for a tool_result
-                # round-trip. Read session.todos directly (no threading.local).
-                try:
-                    from agent_core.tasks import todo_payload
-                    session.emit("todo", {"todos": todo_payload(session.todos)})
-                except Exception:
-                    pass
-            elif has_active_todos():
-                # Only count toward the nudge threshold while there's unfinished
-                # todo work. When the list is empty or fully completed, hold at
-                # 0 so the "Update your todos" reminder never fires pointlessly.
-                session.rounds_since_todo += 1
+            if is_readonly_tool(block.name):
+                # Gather maximal consecutive readonly exec batch
+                batch = []  # list of (action_index, block)
+                while (ai < len(actions)
+                       and actions[ai][0] == "exec"
+                       and is_readonly_tool(actions[ai][1].name)):
+                    batch.append((ai, actions[ai][1]))
+                    ai += 1
+
+                if len(batch) == 1:
+                    # Single readonly — run inline (no pool overhead)
+                    idx, blk = batch[0]
+                    handler = handlers.get(blk.name)
+                    _tool_span = _tracer.start_span("tool_call", {
+                        "tool": blk.name, "readonly": True,
+                    }, parent_id=_turn_span.id)
+                    output = call_tool_handler(handler, blk.input, blk.name)
+                    _tracer.end_span(_tool_span)
+                    trigger_hooks("PostToolUse", blk, output)
+                    session.emit("tool_result", {"id": blk.id, "content": output})
+                    _exec_outputs[idx] = output
+                else:
+                    # Parallel readonly batch
+                    with concurrent.futures.ThreadPoolExecutor(
+                            max_workers=min(4, len(batch))) as pool:
+                        fut_map = {}
+                        for idx, blk in batch:
+                            handler = handlers.get(blk.name)
+                            fut = pool.submit(call_tool_handler,
+                                              handler, blk.input, blk.name)
+                            fut_map[fut] = (idx, blk)
+                        for fut in concurrent.futures.as_completed(fut_map):
+                            idx, blk = fut_map[fut]
+                            output = fut.result()
+                            trigger_hooks("PostToolUse", blk, output)
+                            session.emit("tool_result",
+                                         {"id": blk.id, "content": output})
+                            _exec_outputs[idx] = output
             else:
-                session.rounds_since_todo = 0
+                # Write block — serial (preserves ordering)
+                # Checkpoint before_write/after_write hooks are handled inside
+                # run_write/run_edit/run_apply_diff themselves, so undo works
+                # regardless of call path.
+                _tool_span = _tracer.start_span("tool_call", {
+                    "tool": block.name, "readonly": False,
+                }, parent_id=_turn_span.id)
+                handler = handlers.get(block.name)
+                output = call_tool_handler(handler, block.input, block.name)
+                _tracer.end_span(_tool_span)
+                trigger_hooks("PostToolUse", block, output)
+                session.emit("tool_result", {"id": block.id, "content": output})
 
-            results.append({"type": "tool_result",
-                            "tool_use_id": block.id, "content": output})
+                if block.name == "todo_write":
+                    session.rounds_since_todo = 0
+                    try:
+                        from agent_core.tasks import todo_payload
+                        session.emit("todo", {"todos": todo_payload(session.todos)})
+                    except Exception:
+                        pass
+                elif has_active_todos():
+                    session.rounds_since_todo += 1
+                else:
+                    session.rounds_since_todo = 0
+
+                _exec_outputs[ai] = output
+                ai += 1
+
+        # ── Phase 3: assemble results in original order ──
+        for ai2, act in enumerate(actions):
+            if act[0] == "exec" and ai2 in _exec_outputs:
+                blk = act[1]
+                results.append({"type": "tool_result",
+                                "tool_use_id": blk.id,
+                                "content": _exec_outputs[ai2]})
 
         if compacted_now:
             continue

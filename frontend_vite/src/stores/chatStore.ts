@@ -99,6 +99,7 @@ interface ChatState {
   setSwitchingMode: (switching: boolean) => void;
   setNewSession: (isNew: boolean) => void;
   addToolCall: (toolCall: ToolCall, options?: { startedAt?: string; requestId?: string }) => void;
+  updateToolCallArguments: (toolCallId: string, args: Record<string, unknown>) => void;
   addToolResult: (toolResult: ToolResult, options?: { updatedAt?: string }) => void;
   markTimedOutExecutions: () => void;
   updateSubtask: (payload: SubtaskUpdatePayload) => void;
@@ -341,6 +342,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         toolExecutionOrder: nextOrder,
         orphanResults: nextOrphanResults,
       };
+    });
+  },
+
+  updateToolCallArguments: (toolCallId, args) => {
+    set((state) => {
+      const exec = state.toolExecutions.get(toolCallId);
+      if (!exec) return state;
+      const nextExecutions = new Map(state.toolExecutions);
+      nextExecutions.set(toolCallId, {
+        ...exec,
+        toolCall: { ...exec.toolCall, arguments: args },
+        updatedAt: new Date().toISOString(),
+      });
+      return { toolExecutions: nextExecutions };
     });
   },
 

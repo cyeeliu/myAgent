@@ -556,6 +556,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     setPaused,
     setInterruptResult,
     addToolCall,
+    updateToolCallArguments,
     addToolResult,
     markTimedOutExecutions,
     updateSubtask,
@@ -1895,6 +1896,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           applyTeamTaskToolCall(toolCall);
         }
       }),
+      webClient.on('chat.tool_call_delta', ({ payload }) => {
+        if (!shouldHandleSessionEvent(payload)) return;
+        const toolCallId = payload?.id;
+        if (!toolCallId) return;
+        const partialArgs = payload?.arguments;
+        if (partialArgs && typeof partialArgs === 'object') {
+          updateToolCallArguments(toolCallId, partialArgs);
+        }
+      }),
       webClient.on('chat.tool_result', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
         if (shouldDropDuplicatedEvent('chat.tool_result', payload)) return;
@@ -2720,6 +2730,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   }, [
     addMessage,
     addToolCall,
+    updateToolCallArguments,
     addToolResult,
     appendTeamMemberOutputDelta,
     appendStreamContent,

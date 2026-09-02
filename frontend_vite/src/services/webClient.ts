@@ -31,6 +31,7 @@ const LEGACY_EVENT_MAP: Record<string, string> = {
   media_content: 'chat.media',
   file_content: 'chat.file',
   tool_call: 'chat.tool_call',
+  tool_call_delta: 'chat.tool_call_delta',
   tool_result: 'chat.tool_result',
   error: 'chat.error',
   interrupt_result: 'chat.interrupt_result',

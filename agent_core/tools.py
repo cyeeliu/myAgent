@@ -29,6 +29,48 @@ def safe_path(p: str, cwd: Path = None) -> Path:
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
+
+# ── Checkpoint / Undo handlers ──
+def run_undo(steps: int = 1) -> str:
+    """Undo the last N write operations by restoring file contents."""
+    from agent_core.checkpoint import manager
+    return manager.undo(steps)
+
+def run_checkpoint(label: str = "") -> str:
+    """Create a named checkpoint of the current file state."""
+    from agent_core.checkpoint import manager
+    return manager.checkpoint(label)
+
+def run_restore(checkpoint_id: str = "") -> str:
+    """Restore files to a named checkpoint, or list checkpoints if no ID given."""
+    from agent_core.checkpoint import manager
+    if not checkpoint_id:
+        return manager.list_checkpoints()
+    return manager.restore(checkpoint_id)
+
+
+# ── LSP code intelligence handlers ──
+def run_diagnostics(path: str) -> str:
+    """Get LSP diagnostics (errors/warnings) for a file."""
+    from agent_core.lsp import client
+    return client.diagnostics(path)
+
+def run_goto_definition(path: str, line: int, character: int) -> str:
+    """Go to definition at a source position."""
+    from agent_core.lsp import client
+    return client.goto_definition(path, line, character)
+
+def run_find_references(path: str, line: int, character: int) -> str:
+    """Find all references to the symbol at a source position."""
+    from agent_core.lsp import client
+    return client.find_references(path, line, character)
+
+def run_hover(path: str, line: int, character: int) -> str:
+    """Get hover info (type/docstring) at a source position."""
+    from agent_core.lsp import client
+    return client.hover(path, line, character)
+
+
 def run_bash(command: str, cwd: Path = None,
              run_in_background: bool = False) -> str:
     # run_in_background is consumed by the dispatcher (background.py starts the
@@ -126,33 +168,238 @@ def run_read(path: str, limit: int | None = None,
 def run_write(path: str, content: str, cwd: Path = None) -> str:
     try:
         fp = safe_path(path, cwd)
+        from agent_core.checkpoint import manager as _ckpt
+        _ckpt.before_write(str(fp))
         fp.parent.mkdir(parents=True, exist_ok=True)
         fp.write_text(content)
+        _ckpt.after_write()
         return f"Wrote {len(content)} bytes to {path}"
     except Exception as e:
         return f"Error: {e}"
+
+def _fuzzy_match(text: str, old_text: str) -> tuple[int, int] | None:
+    """Whitespace-tolerant match: strip trailing whitespace per line, then
+    search.  Returns (start_char, end_char) in the *original* text, or None."""
+    text_lines = text.splitlines(keepends=True)
+    old_lines = old_text.splitlines(keepends=True)
+    if not old_lines:
+        return None
+    # Normalize: strip trailing whitespace (including \r) from each line
+    norm_text = [l.rstrip() for l in text_lines]
+    norm_old = [l.rstrip() for l in old_lines]
+    n_old = len(norm_old)
+    for i in range(len(norm_text) - n_old + 1):
+        if norm_text[i:i + n_old] == norm_old:
+            # Found — map back to original char range
+            start_char = sum(len(text_lines[j]) for j in range(i))
+            end_char = start_char + sum(len(text_lines[j]) for j in range(i, i + n_old))
+            return (start_char, end_char)
+    return None
+
+
+def _context_around(text: str, old_text: str, radius: int = 5) -> str:
+    """Return line-numbered context around the best partial match of old_text
+    in text, to help the LLM self-correct."""
+    text_lines = text.splitlines()
+    old_first = old_text.strip().splitlines()[0] if old_text.strip() else ""
+    # Find the line that best matches the first line of old_text
+    best_idx = 0
+    best_score = 0
+    for i, line in enumerate(text_lines):
+        common = sum(1 for c in line if c in old_first)
+        if common > best_score:
+            best_score = common
+            best_idx = i
+    start = max(0, best_idx - radius)
+    end = min(len(text_lines), best_idx + radius + 1)
+    lines = []
+    for i in range(start, end):
+        marker = " >>" if i == best_idx else "   "
+        lines.append(f"{marker} L{i+1}: {text_lines[i]}")
+    return "\n".join(lines)
+
 
 def run_edit(path: str, old_text: str, new_text: str,
              cwd: Path = None, replace_all: bool = False) -> str:
     try:
         fp = safe_path(path, cwd)
+        from agent_core.checkpoint import manager as _ckpt
+        _ckpt.before_write(str(fp))
         text = fp.read_text()
-        if old_text not in text:
-            return f"Error: text not found in {path}"
-        count = text.count(old_text)
-        if replace_all:
-            fp.write_text(text.replace(old_text, new_text))
-            return f"Edited {path} (replaced {count} occurrences)"
-        else:
-            # Ambiguity guard: a non-unique old_text without replace_all is
-            # almost always a mistake (the model picked a too-short anchor).
-            # Refuse and report the count so the model can lengthen the anchor
-            # or set replace_all — matches Claude Code Edit semantics.
+
+        # ── 1. Exact match ──
+        if old_text in text:
+            count = text.count(old_text)
+            if replace_all:
+                fp.write_text(text.replace(old_text, new_text))
+                _ckpt.after_write()
+                return f"Edited {path} (replaced {count} occurrences)"
             if count > 1:
                 return (f"Error: old_text matches {count} places in {path}. "
                         "Make it unique, or set replace_all=true to replace all.")
             fp.write_text(text.replace(old_text, new_text, 1))
+            _ckpt.after_write()
             return f"Edited {path} (replaced 1 occurrence)"
+
+        # ── 2. Fuzzy match (whitespace-tolerant) ──
+        match = _fuzzy_match(text, old_text)
+        if match is not None:
+            start, end = match
+            # For replace_all, find all fuzzy matches
+            if replace_all:
+                # Iteratively find and replace all fuzzy matches
+                remaining = text
+                offset = 0
+                replaced = 0
+                result_parts = []
+                while True:
+                    m = _fuzzy_match(remaining, old_text)
+                    if m is None:
+                        result_parts.append(remaining)
+                        break
+                    s, e = m
+                    result_parts.append(remaining[:s])
+                    result_parts.append(new_text)
+                    remaining = remaining[e:]
+                    replaced += 1
+                if replaced > 0:
+                    fp.write_text("".join(result_parts))
+                    _ckpt.after_write()
+                    return f"Edited {path} (fuzzy-matched, replaced {replaced} occurrences)"
+            else:
+                # Single fuzzy replace — check uniqueness
+                # Count matches by scanning
+                temp = text
+                match_count = 0
+                while True:
+                    m = _fuzzy_match(temp, old_text)
+                    if m is None:
+                        break
+                    match_count += 1
+                    temp = temp[m[1]:]
+                if match_count > 1:
+                    return (f"Error: fuzzy match found {match_count} places in {path}. "
+                            "Make old_text unique, or set replace_all=true.")
+                new_text_full = text[:start] + new_text + text[end:]
+                fp.write_text(new_text_full)
+                _ckpt.after_write()
+                return f"Edited {path} (fuzzy-matched 1 occurrence, whitespace-normalized)"
+
+        # ── 3. No match — return helpful context ──
+        ctx = _context_around(text, old_text)
+        return (f"Error: old_text not found in {path} (exact or fuzzy).\n"
+                f"Context around best partial match:\n{ctx}")
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def run_apply_diff(path: str, diff: str, cwd: Path = None) -> str:
+    """Apply a unified diff patch to a file. Pure-Python implementation."""
+    import re as _re
+    try:
+        fp = safe_path(path, cwd)
+        from agent_core.checkpoint import manager as _ckpt
+        _ckpt.before_write(str(fp))
+        text = fp.read_text()
+        lines = text.splitlines(keepends=True)
+
+        # Parse hunks
+        hunks = []
+        current_hunk = None
+        for line in diff.splitlines(keepends=True):
+            if line.startswith("@@"):
+                m = _re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+                if not m:
+                    return f"Error: invalid hunk header: {line.strip()}"
+                old_start = int(m.group(1))
+                old_count = int(m.group(2) or 1)
+                new_start = int(m.group(3))
+                new_count = int(m.group(4) or 1)
+                current_hunk = {
+                    "old_start": old_start,
+                    "old_count": old_count,
+                    "new_start": new_start,
+                    "new_count": new_count,
+                    "lines": [],
+                }
+                hunks.append(current_hunk)
+            elif current_hunk is not None:
+                current_hunk["lines"].append(line)
+
+        if not hunks:
+            return f"Error: no hunks found in diff"
+
+        # Apply hunks (process in reverse order to preserve line numbers)
+        result_lines = list(lines)
+        for hunk in reversed(hunks):
+            old_start = hunk["old_start"] - 1  # 0-indexed
+            hunk_lines = hunk["lines"]
+
+            # Separate context/removed/added lines
+            context_before = []
+            removed = []
+            added = []
+            for hl in hunk_lines:
+                if hl.startswith(" "):
+                    context_before.append(hl[1:])
+                elif hl.startswith("-"):
+                    removed.append(hl[1:])
+                elif hl.startswith("+"):
+                    added.append(hl[1:])
+
+            # Verify context + removed lines match the file
+            expected = context_before + removed
+            # Also collect context lines that come after removed lines
+            # (unified diff interleaves context and changes)
+            # Re-parse properly: walk through hunk lines in order
+            old_lines_expected = []
+            new_lines_replacement = []
+            for hl in hunk_lines:
+                if hl.startswith(" "):
+                    old_lines_expected.append(hl[1:])
+                    new_lines_replacement.append(hl[1:])
+                elif hl.startswith("-"):
+                    old_lines_expected.append(hl[1:])
+                elif hl.startswith("+"):
+                    new_lines_replacement.append(hl[1:])
+
+            # Find the position in result_lines where old_lines_expected starts
+            # Use old_start as a hint, but verify
+            n_expected = len(old_lines_expected)
+            if n_expected == 0:
+                continue
+
+            # Normalize line endings for comparison
+            def _norm(l):
+                return l.rstrip("\n\r")
+
+            match_pos = None
+            # Try the hinted position first, then search nearby
+            search_start = max(0, old_start - 3)
+            for i in range(search_start, len(result_lines) - n_expected + 1):
+                if all(_norm(result_lines[i + j]) == _norm(old_lines_expected[j])
+                       for j in range(n_expected)):
+                    match_pos = i
+                    break
+
+            if match_pos is None:
+                # Broader search
+                for i in range(len(result_lines) - n_expected + 1):
+                    if all(_norm(result_lines[i + j]) == _norm(old_lines_expected[j])
+                           for j in range(n_expected)):
+                        match_pos = i
+                        break
+
+            if match_pos is None:
+                return (f"Error: hunk @@ -{hunk['old_start']},{hunk['old_count']} "
+                        f"does not match {path} at expected location.")
+
+            # Replace
+            result_lines[match_pos:match_pos + n_expected] = new_lines_replacement
+
+        fp.write_text("".join(result_lines))
+        _ckpt.after_write()
+        return f"Applied diff to {path} ({len(hunks)} hunk(s))"
     except Exception as e:
         return f"Error: {e}"
 
@@ -802,13 +1049,25 @@ BUILTIN_TOOLS = [
                       "required": ["path", "content"]}},
     {"name": "edit_file", "description":
      "Replace exact text in a file. Refuses if old_text matches more than one "
-     "place unless replace_all=true (guards against ambiguous bulk edits).",
+     "place unless replace_all=true (guards against ambiguous bulk edits). "
+     "Falls back to whitespace-normalized fuzzy matching if exact match fails, "
+     "and returns line-numbered context on total failure for self-correction.",
      "input_schema": {"type": "object",
                       "properties": {"path": {"type": "string"},
                                      "old_text": {"type": "string"},
                                      "new_text": {"type": "string"},
                                      "replace_all": {"type": "boolean"}},
                       "required": ["path", "old_text", "new_text"]}},
+    {"name": "apply_diff", "description":
+     "Apply a unified diff patch to a file. Accepts standard @@ -start,count "
+     "+start,count @@ hunk format with context lines, -removed, and +added "
+     "lines. Verifies context matches before applying; returns error with "
+     "location on mismatch.",
+     "input_schema": {"type": "object",
+                      "properties": {"path": {"type": "string"},
+                                     "diff": {"type": "string",
+                                              "description": "Unified diff content"}},
+                      "required": ["path", "diff"]}},
     {"name": "list_dir", "description":
      "List directory entries (dirs-first, sorted). `name/` for dirs, "
      "`name  (size bytes)` for files. Stays inside the workspace.",
@@ -936,6 +1195,55 @@ BUILTIN_TOOLS = [
      "input_schema": {"type": "object",
                       "properties": {"focus": {"type": "string"}},
                       "required": []}},
+    {"name": "undo",
+     "description": "Undo the last N write operations by restoring file contents "
+                    "to their state before each write tool ran. Use when a change "
+                    "broke something or the wrong file was modified.",
+     "input_schema": {"type": "object",
+                      "properties": {"steps": {"type": "integer",
+                                                "description": "Number of write operations to undo (default 1)"}},
+                      "required": []}},
+    {"name": "checkpoint",
+     "description": "Create a named checkpoint of the current file state. "
+                    "Use restore(checkpoint_id) to roll back to it later.",
+     "input_schema": {"type": "object",
+                      "properties": {"label": {"type": "string",
+                                                "description": "Human-readable label for this checkpoint"}},
+                      "required": []}},
+    {"name": "restore",
+     "description": "Restore files to a named checkpoint. Call with no "
+                    "checkpoint_id to list available checkpoints.",
+     "input_schema": {"type": "object",
+                      "properties": {"checkpoint_id": {"type": "string"}},
+                      "required": []}},
+    {"name": "diagnostics",
+     "description": "Get LSP diagnostics (errors/warnings) for a file. "
+                    "Requires pyright-langserver (Python) or "
+                    "typescript-language-server (JS/TS) installed.",
+     "input_schema": {"type": "object",
+                      "properties": {"path": {"type": "string"}},
+                      "required": ["path"]}},
+    {"name": "goto_definition",
+     "description": "Go to the definition of the symbol at the given position.",
+     "input_schema": {"type": "object",
+                      "properties": {"path": {"type": "string"},
+                                     "line": {"type": "integer", "description": "1-indexed line number"},
+                                     "character": {"type": "integer", "description": "1-indexed column"}},
+                      "required": ["path", "line", "character"]}},
+    {"name": "find_references",
+     "description": "Find all references to the symbol at the given position.",
+     "input_schema": {"type": "object",
+                      "properties": {"path": {"type": "string"},
+                                     "line": {"type": "integer"},
+                                     "character": {"type": "integer"}},
+                      "required": ["path", "line", "character"]}},
+    {"name": "hover",
+     "description": "Get hover info (type signature, docstring) at a position.",
+     "input_schema": {"type": "object",
+                      "properties": {"path": {"type": "string"},
+                                     "line": {"type": "integer"},
+                                     "character": {"type": "integer"}},
+                      "required": ["path", "line", "character"]}},
     {"name": "create_task", "description": "Create a task.",
      "input_schema": {"type": "object",
                       "properties": {"subject": {"type": "string"},
@@ -1063,15 +1371,37 @@ BUILTIN_TOOLS = [
                       "required": ["name"]}},
 ]
 
+# ── Readonly annotation ──
+# Tools with no side effects can be executed in parallel by the agent loop.
+# Everything not listed here is treated as a write/mutating tool and runs
+# serially to preserve ordering semantics.
+_READONLY_TOOLS = frozenset({
+    "read_file", "list_dir", "glob", "grep",
+    "web_fetch", "web_search", "search_skill", "load_skill",
+    "task_list", "task_output", "list_tasks", "get_task",
+    "list_crons", "team_info", "check_inbox",
+    "diagnostics", "goto_definition", "find_references", "hover",
+})
+for _t in BUILTIN_TOOLS:
+    _t["readonly"] = _t["name"] in _READONLY_TOOLS
+
+def is_readonly_tool(name: str) -> bool:
+    """Return True if the named builtin tool is side-effect-free."""
+    return name in _READONLY_TOOLS
+
+
 BUILTIN_HANDLERS = {
     "bash": run_bash, "read_file": run_read, "write_file": run_write,
-    "edit_file": run_edit, "list_dir": run_list_dir,
+    "edit_file": run_edit, "apply_diff": run_apply_diff, "list_dir": run_list_dir,
     "web_fetch": run_web_fetch, "web_search": run_web_search,
     "glob": run_glob, "grep": run_grep, "ask_user": run_ask_user,
     "show_widget": run_show_widget, "exit_plan_mode": run_exit_plan_mode,
     "task_output": run_task_output, "task_stop": run_task_stop,
     "task_list": run_task_list,
     "todo_write": run_todo_write, "task": spawn_subagent,
+    "undo": run_undo, "checkpoint": run_checkpoint, "restore": run_restore,
+    "diagnostics": run_diagnostics, "goto_definition": run_goto_definition,
+    "find_references": run_find_references, "hover": run_hover,
     "load_skill": load_skill,
     "download_skill": download_skill,
     "search_skill": search_skill,
