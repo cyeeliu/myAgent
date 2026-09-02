@@ -222,6 +222,100 @@ def run_team_info(team_name: str) -> str:
 
 # ── Team startup ──
 
+# ── Team watchdog ──
+
+# Default timeout for team watchdog: 10 minutes. Override with env var
+# TEAM_WATCHDOG_TIMEOUT_SECONDS.
+import os as _os
+_TEAM_WATCHDOG_TIMEOUT = int(_os.environ.get("TEAM_WATCHDOG_TIMEOUT_SECONDS", "600"))
+_TEAM_WATCHDOG_INTERVAL = 5  # poll interval (seconds)
+_TEAM_STUCK_THRESHOLD = 120  # no heartbeat for 120s → consider stuck
+
+
+def _start_team_watchdog(
+    team_name: str,
+    all_names: list[str],
+    boss_session,
+    timeout: int = _TEAM_WATCHDOG_TIMEOUT,
+) -> None:
+    """Start a daemon thread that monitors team completion.
+
+    The watchdog handles two degradation scenarios:
+    1. **All teammates exited but boss wasn't notified** — synthesizes a
+       "team_complete" result message to the boss via BUS, which triggers
+       the A2A callback to re-invoke the boss session.
+    2. **Team stuck (timeout)** — after `timeout` seconds, sends a
+       "team_timeout" result with whatever partial info is available,
+       forcing the boss to surface a degraded result to the user.
+
+    The watchdog also detects individually stuck teammates (registered but
+    no heartbeat for _TEAM_STUCK_THRESHOLD seconds) and logs warnings.
+    """
+    import time as _time
+    # session_dir() is threading.local — capture here so the watchdog thread
+    # writes to the same mailbox as the boss. Without this, BUS.send in the
+    # watchdog would write to a different session dir and the boss would
+    # never see the notification.
+    captured_session_dir = session_dir()
+
+    def _watch():
+        set_session_dir(captured_session_dir)
+        start = _time.monotonic()
+        notified = False
+        while not notified:
+            _time.sleep(_TEAM_WATCHDOG_INTERVAL)
+            elapsed = _time.monotonic() - start
+            active = set(registry.active_names())
+            team_alive = [n for n in all_names if n in active]
+
+            # Check for stuck teammates (alive but no heartbeat)
+            heartbeats = registry.get_heartbeats()
+            now_mono = _time.monotonic()
+            for n in team_alive:
+                last_hb = heartbeats.get(n)
+                if last_hb is not None and (now_mono - last_hb) > _TEAM_STUCK_THRESHOLD:
+                    logger.warning(
+                        "Teammate %s in team %r appears stuck (no heartbeat for %.0fs)",
+                        n, team_name, now_mono - last_hb)
+
+            if not team_alive:
+                # All teammates exited — notify boss with completion.
+                logger.info("Watchdog: team %r complete — all %d members exited "
+                            "after %.1fs", team_name, len(all_names), elapsed)
+                BUS.send(
+                    f"watchdog-{team_name}", "boss",
+                    f"[team_complete] Team '{team_name}' finished. "
+                    f"All {len(all_names)} member(s) have exited. "
+                    f"Check check_inbox for their results.",
+                    "result",
+                    {"watchdog": True, "team_name": team_name,
+                     "elapsed": round(elapsed, 1)})
+                notified = True
+                break
+
+            if elapsed > timeout:
+                # Timeout — force completion with degraded status.
+                logger.warning("Watchdog: team %r TIMEOUT after %.0fs — "
+                               "still active: %s. Forcing completion.",
+                               team_name, elapsed, team_alive)
+                BUS.send(
+                    f"watchdog-{team_name}", "boss",
+                    f"[team_timeout] Team '{team_name}' timed out after "
+                    f"{int(elapsed)}s. Still active: {team_alive}. "
+                    f"Forcing completion — check check_inbox for partial results.",
+                    "result",
+                    {"watchdog": True, "team_name": team_name,
+                     "timeout": True, "still_active": team_alive,
+                     "elapsed": round(elapsed, 1)})
+                notified = True
+                break
+
+    threading.Thread(target=_watch, name=f"watchdog-{team_name}",
+                     daemon=True).start()
+    logger.info("Watchdog started for team %r (timeout=%ds, members=%s)",
+                team_name, timeout, all_names)
+
+
 def start_team(team_name: str, task: str = "") -> str:
     """Launch a saved team (from .agents/agents_config.json) in 3-tier mode:
     main loop → team leader → members. Spawns a dedicated LEADER teammate
@@ -362,7 +456,12 @@ def start_team(team_name: str, task: str = "") -> str:
         on_exit=_leader_on_exit,
     )
 
-    logger.info("Team %r launched: leader=%s, %d members",
+    # Start the watchdog — detects when all teammates exit (and notifies
+    # the boss) or when the team is stuck (timeout → degraded completion).
+    all_teammate_names = [leader_name] + [mn for mn, _, _ in member_roster]
+    _start_team_watchdog(team_name, all_teammate_names, boss_session)
+
+    logger.info("Team %r launched: leader=%s, %d members (watchdog active)",
                 team_name, leader_name, len(member_roster))
 
     return build_team_summary(

@@ -160,4 +160,11 @@ def build_team_summary(
         "freezes the session. The A2A callback handles re-invocation for you.\n"
         "- The wait tool is still available for background tasks (sources=[\"background\"]) "
         "if needed, but NOT for team coordination.")
+    lines.append(
+        "DEGRADATION: A watchdog monitors the team. If all members exit without "
+        "sending a final result, you'll receive a [TEAM COMPLETE] notification. "
+        "If the team exceeds the timeout (default 10 min), you'll receive a "
+        "[TEAM TIMEOUT] notification with partial results. In either case, "
+        "summarize whatever results are available for the user — do NOT hang "
+        "or retry indefinitely.")
     return "\n".join(lines)

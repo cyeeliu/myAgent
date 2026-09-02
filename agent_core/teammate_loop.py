@@ -373,6 +373,8 @@ def run_teammate_loop(
         while True:
             if boss_session is not None and getattr(boss_session, "interrupted", False):
                 break
+            # Heartbeat: tell the watchdog we're alive and making progress.
+            registry.heartbeat(name)
             if len(messages) <= 3:
                 messages.insert(0, {"role": "user",
                     "content": f"<identity>You are '{name}', role: {role}. "
@@ -487,8 +489,22 @@ def run_teammate_loop(
                     else:
                         continue
                     break
+            # GUARANTEED EXIT NOTIFICATION: always send a result to the
+            # overseer so the boss/leader knows this teammate is done.
+            # Even if sent_reply is True (intermediate messages were sent),
+            # a final "result" type message is needed for the A2A callback
+            # to re-invoke the boss. Without this, the boss hangs forever
+            # waiting for a completion signal that never arrives.
             if not sent_reply:
                 BUS.send(name, overseer, summary, "result")
+            else:
+                # sent_reply=True means we sent intermediate messages, but
+                # we must still send a final "result" so the overseer knows
+                # we're done (not just waiting for the next message).
+                BUS.send(name, overseer,
+                         f"[member_done] {name} finished.",
+                         "result",
+                         {"member_done": True, "member_name": name})
 
             # Only pop our own entry — a newer session may have evicted us.
             registry.unregister_teammate(name, cur_sd)

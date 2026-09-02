@@ -31,13 +31,14 @@ class TeamRegistry:
     * ``boss_sessions``: team_name → boss session object.
     """
 
-    __slots__ = ("_lock", "_active", "_leaders", "_bosses")
+    __slots__ = ("_lock", "_active", "_leaders", "_bosses", "_heartbeats")
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._active: dict[str, str] = {}
         self._leaders: dict[str, str] = {}
         self._bosses: dict[str, Any] = {}
+        self._heartbeats: dict[str, float] = {}  # name → last-active monotonic time
 
     # ── active teammates ──
 
@@ -46,6 +47,7 @@ class TeamRegistry:
         if a teammate with the same name is already active in the same
         session (genuine duplicate). Stale entries from a different
         session are evicted automatically."""
+        import time
         with self._lock:
             existing = self._active.get(name)
             if existing == session_dir_str:
@@ -54,6 +56,7 @@ class TeamRegistry:
                 # Stale entry from a different session — evict it.
                 self._active.pop(name, None)
             self._active[name] = session_dir_str
+            self._heartbeats[name] = time.monotonic()
             return True
 
     def unregister_teammate(self, name: str, session_dir_str: str) -> None:
@@ -63,6 +66,21 @@ class TeamRegistry:
         with self._lock:
             if self._active.get(name) == session_dir_str:
                 self._active.pop(name, None)
+                self._heartbeats.pop(name, None)
+
+    def heartbeat(self, name: str) -> None:
+        """Update the last-active timestamp for a teammate. Called each
+        iteration of the teammate loop so the watchdog can distinguish
+        'alive and working' from 'registered but stuck/crashed'."""
+        import time
+        with self._lock:
+            if name in self._active:
+                self._heartbeats[name] = time.monotonic()
+
+    def get_heartbeats(self) -> dict[str, float]:
+        """Snapshot of all heartbeat timestamps (monotonic)."""
+        with self._lock:
+            return dict(self._heartbeats)
 
     def is_active(self, name: str) -> bool:
         """Whether a teammate by ``name`` is currently registered."""

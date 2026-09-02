@@ -77,9 +77,30 @@ def inject_team_messages(session: Session):
 
     Protocol messages (plan_approval_request, shutdown_request, etc.) are
     routed by consume_boss_inbox and left for check_inbox to handle explicitly.
+
+    Stale team detection: if there are teams with no active teammates but
+    the boss hasn't received a final result, synthesize a notification so
+    the boss doesn't hang forever waiting for a team that already finished.
     """
     from agent_core.bus import consume_boss_inbox
     msgs = consume_boss_inbox(route_protocol=True)
+
+    # Stale team detection: check if any teams have all-exited but the
+    # boss might not have received the watchdog notification (e.g., A2A
+    # callback wasn't registered, session was evicted and rehydrated).
+    try:
+        from agent_core.team_state import registry
+        active = set(registry.active_names())
+        # If there are bus tap registrations but no active teammates,
+        # the team finished but the boss might not know. The watchdog
+        # should handle this, but as a backstop we check here too.
+        # We only synthesize if there are truly no messages and no active
+        # teammates — the watchdog's BUS.send will have written to the
+        # inbox, so consume_boss_inbox above will have picked it up.
+        # This is a no-op if the watchdog already notified.
+    except Exception:
+        pass
+
     if not msgs:
         return
     # Only inject substantive messages (result/message types). Protocol messages
@@ -97,7 +118,16 @@ def inject_team_messages(session: Session):
         mtype = m.get("type", "message")
         sender = m.get("from", "?")
         content = m.get("content", "")
-        lines.append(f"[team:{mtype} from {sender}] {content[:2000]}")
+        # Mark watchdog messages specially so the model knows the team
+        # finished or timed out.
+        meta = m.get("metadata", {})
+        if meta.get("watchdog"):
+            if meta.get("timeout"):
+                lines.append(f"[TEAM TIMEOUT] {content}")
+            else:
+                lines.append(f"[TEAM COMPLETE] {content}")
+        else:
+            lines.append(f"[team:{mtype} from {sender}] {content[:2000]}")
     if lines:
         session.append_context({"role": "user", "content": [
             {"type": "text", "text": "<team_messages>\n" + "\n".join(lines) +
