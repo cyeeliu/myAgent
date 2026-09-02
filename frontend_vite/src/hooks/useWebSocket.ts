@@ -653,6 +653,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   // 断开连接
   const disconnect = useCallback(() => {
     webClient.disconnect();
+    // F-C1: reset seq tracking so a new session starts fresh
+    webClient.resetLastSeq();
   }, [setConnected]);
 
   const request = useCallback(
@@ -2004,7 +2006,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // and periodically during streaming, so holding for the first visible reply
         // would just freeze the stat at 0 during loading.
         setContextCompressionStats(stats);
-        console.debug('[ws] context.usage', {
+        if (import.meta.env.DEV) console.debug('[ws] context.usage', {
           session_id: payload.session_id,
           rate,
           context_max: contextMax,
@@ -2407,7 +2409,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           proactiveType: (proactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration') || undefined,
         });
 
-        console.debug('[ws] proactive_recommendation', {
+        if (import.meta.env.DEV) console.debug('[ws] proactive_recommendation', {
           type: proactiveType,
           target: proactiveTarget,
           reason: proactiveReason,
@@ -2543,14 +2545,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       webClient.on('chat.usage_summary', ({ payload }) => {
-        console.log('[usage_summary] received:', payload);
+        // F-L2: guard debug logging so it doesn't run in production
+        if (import.meta.env.DEV) console.debug('[usage_summary] received:', payload);
         if (!shouldHandleSessionEvent(payload)) {
-          console.log('[usage_summary] filtered by session check');
+          if (import.meta.env.DEV) console.debug('[usage_summary] filtered by session check');
           return;
         }
         const usage = payload.usage as UsageSummary | undefined;
         if (!usage) {
-          console.log('[usage_summary] no usage field in payload');
+          if (import.meta.env.DEV) console.debug('[usage_summary] no usage field in payload');
           return;
         }
         const { currentStreamId, messages } = useChatStore.getState();
@@ -2563,7 +2566,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
           }
         }
-        console.log('[usage_summary] targetId:', targetId, 'usage:', usage);
+        if (import.meta.env.DEV) console.debug('[usage_summary] targetId:', targetId, 'usage:', usage);
         if (targetId) {
           useChatStore.getState().setUsageSummary(targetId, usage);
         }
@@ -2648,7 +2651,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             });
           }
         } else {
-          console.warn('[harness.stage_result] No stage field in payload, skipping update');
+          if (import.meta.env.DEV) console.warn('[harness.stage_result] No stage field in payload, skipping update');
         }
       }),
       webClient.on('harness.extension_ready', ({ payload }) => {

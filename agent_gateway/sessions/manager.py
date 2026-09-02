@@ -116,10 +116,16 @@ class SessionManager:
         agent.on_background_complete = gs._on_background_complete
         # A2A: when a teammate sends a result/message to the boss, re-invoke
         # the boss session with a fresh turn instead of blocking on `wait`.
+        # CRITICAL: use agent.workdir (set at line 57 = SESSION_STATE_ROOT/sid),
+        # NOT session_dir() — session_dir() is threading.local and is NOT set
+        # in the request-handling thread where _build runs. It only gets bound
+        # in _run_turn's worker thread via set_workdir(). Using session_dir()
+        # here would register under the default _WORKSPACE_ROOT key, which
+        # never matches the key computed in BUS.send (which runs in the
+        # teammate thread with the captured session_dir restored).
         from agent_core.bus import register_team_callback
-        from agent_core.env import session_dir
         try:
-            register_team_callback(str(session_dir()), gs._on_team_message)
+            register_team_callback(str(agent.workdir), gs._on_team_message)
         except Exception:
             pass
         return gs
@@ -184,11 +190,11 @@ class SessionManager:
             gs = self._sessions.pop(sid, None)
         if gs is not None:
             # Unregister the A2A team callback so stale messages don't try to
-            # re-invoke a dropped session.
+            # re-invoke a dropped session. Use agent.workdir (the key used in
+            # _build), NOT session_dir() which is threading.local.
             try:
                 from agent_core.bus import unregister_team_callback
-                from agent_core.env import session_dir
-                unregister_team_callback(str(session_dir()))
+                unregister_team_callback(str(gs.agent.workdir))
             except Exception:
                 pass
 

@@ -96,7 +96,22 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
   const isHistoryJson = isHistoryPreviewFile(fileName);
   const isJson = lowerFileName.endsWith('.json') || lowerFileName.endsWith('.jsonl');
   const isTodoJson = lowerFileName === 'todo.json';
-  const isPreviewable = isMarkdown || isJson;
+  // F-H2: enable editing for all text files, not just markdown
+  const TEXT_FILE_EXTENSIONS = [
+    '.md', '.mdx', '.txt', '.json', '.jsonl', '.yaml', '.yml',
+    '.js', '.jsx', '.ts', '.tsx', '.py', '.rb', '.go', '.rs',
+    '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.php', '.swift',
+    '.kt', '.scala', '.sh', '.bash', '.zsh', '.fish', '.ps1',
+    '.sql', '.html', '.htm', '.css', '.scss', '.sass', '.less',
+    '.xml', '.toml', '.ini', '.cfg', '.conf', '.env', '.gitignore',
+    '.dockerfile', '.makefile', '.csv', '.tsv', '.log', '.diff',
+    '.patch', '.properties', '.gradle', '.lua', '.r', '.dart',
+    '.vue', '.svelte', '.graphql', '.gql', '.proto', '.thrift',
+  ];
+  const isTextFile = TEXT_FILE_EXTENSIONS.some((ext) => lowerFileName.endsWith(ext)) ||
+    // Files with no extension that are commonly text (Makefile, Dockerfile, etc.)
+    ['makefile', 'dockerfile', 'rakefile', 'gemfile', '.gitignore', '.env', '.editorconfig'].includes(lowerFileName);
+  const isPreviewable = isMarkdown || isJson || isTextFile;
   const fileNotFound = Boolean(error && error.includes('HTTP 404'));
   const [historyChatPreview, setHistoryChatPreview] = useState(true);
 
@@ -177,7 +192,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
 
         const originalEncoding = response.headers.get('X-Original-Encoding');
         if (originalEncoding && fileEncoding === 'auto') {
-          console.log(`File encoding detected: ${originalEncoding}`);
+          if (import.meta.env.DEV) console.debug(`File encoding detected: ${originalEncoding}`);
         }
 
         const text = await response.text();
@@ -279,7 +294,8 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
               <option value="iso-8859-1">ISO-8859-1</option>
             </select>
           </div>
-          {isMarkdown && !loading ? (
+          {/* F-H2: edit button for all text files, not just markdown */}
+          {isTextFile && !isHistoryJson && !loading ? (
             <div className="flex flex-shrink-0 items-center gap-2 self-stretch">
               {isEditing ? (
                 <>
@@ -421,8 +437,28 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
                 />
               </div>
             )
+          ) : isEditing ? (
+            // F-H2: allow editing JSON files too
+            <textarea
+              className="w-full h-full min-h-[280px] resize-none rounded-lg border border-border bg-card p-3 text-sm text-text outline-none focus:border-accent/50 mono"
+              value={draftContent}
+              onChange={(event) => setDraftContent(event.target.value)}
+              disabled={saving}
+            />
           ) : (
             <VirtualizedTextViewer text={isHistoryJson ? content : formattedJson} />
+          )
+        ) : isTextFile ? (
+          // F-H2: render and edit all text files (non-markdown, non-json)
+          isEditing ? (
+            <textarea
+              className="w-full h-full min-h-[280px] resize-none rounded-lg border border-border bg-card p-3 text-sm text-text outline-none focus:border-accent/50 mono"
+              value={draftContent}
+              onChange={(event) => setDraftContent(event.target.value)}
+              disabled={saving}
+            />
+          ) : (
+            <VirtualizedTextViewer text={content} />
           )
         ) : (
           <div className="h-full flex items-center justify-center text-text-muted text-sm">

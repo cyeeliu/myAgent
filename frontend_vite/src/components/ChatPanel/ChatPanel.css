@@ -486,6 +486,23 @@
   white-space: nowrap;
 }
 
+/* F-L8: mode description styling */
+.chat-mode-select__label-group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.chat-mode-select__desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .chat-mode-select__chevron,
 .chat-mode-select__check {
   width: 14px;

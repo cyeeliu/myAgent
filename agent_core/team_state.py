@@ -98,6 +98,17 @@ class TeamRegistry:
         with self._lock:
             return list(self._active.keys())
 
+    def active_names_for_session(self, session_dir_str: str) -> list[str]:
+        """Snapshot of active teammate names belonging to a specific session.
+
+        Fixes C-H9: active_names() returns teammates across ALL sessions,
+        causing cross-session leakage in update_context. This method
+        filters by the session_dir_str that was passed to register_teammate.
+        """
+        with self._lock:
+            return [name for name, sd in self._active.items()
+                    if sd == session_dir_str]
+
     def active_dict(self) -> dict[str, str]:
         """Snapshot copy of the full active-teammate dict."""
         with self._lock:

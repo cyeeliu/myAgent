@@ -358,7 +358,8 @@ def run_teammate_loop(
     # Worktree context — bound upfront when a member worktree is given;
     # otherwise stays None until a task with a worktree is claimed.
     wt_ctx: dict = {"path": worktree}
-    protocol_ctx: dict = {"waiting_plan": None}
+    protocol_ctx: dict = {"waiting_plan": None,
+                          "waiting_plan_since": None}
 
     # ── File tool wrapper ──
     def _wt_cwd():
@@ -436,8 +437,34 @@ def run_teammate_loop(
                 if should_shutdown:
                     break
                 if protocol_ctx["waiting_plan"]:
-                    time.sleep(IDLE_POLL_INTERVAL)
-                    continue
+                    # T-M2: plan approval timeout — if the leader hasn't
+                    # responded in 5 minutes, give up waiting and proceed.
+                    # The leader may have crashed or be stuck; waiting
+                    # forever would hang the teammate indefinitely.
+                    _wp_since = protocol_ctx.get("waiting_plan_since")
+                    if _wp_since is not None:
+                        _elapsed = time.time() - _wp_since
+                        if _elapsed > 300:
+                            logger.warning("Teammate %s plan approval timed "
+                                           "out after %.0fs (req=%s) — "
+                                           "proceeding without approval",
+                                           name, _elapsed,
+                                           protocol_ctx["waiting_plan"])
+                            messages.append({"role": "user", "content": [{
+                                "type": "text",
+                                "text": "[plan approval timed out — "
+                                        "leader did not respond in 5 minutes. "
+                                        "Proceeding without approval.]"
+                            }]})
+                            protocol_ctx["waiting_plan"] = None
+                            protocol_ctx["waiting_plan_since"] = None
+                            # Don't continue — fall through to LLM call
+                        else:
+                            time.sleep(IDLE_POLL_INTERVAL)
+                            continue
+                    else:
+                        time.sleep(IDLE_POLL_INTERVAL)
+                        continue
                 # handle_inbox_message already injected all non-protocol
                 # messages (result, message, plan_approval_request) into
                 # the context. No separate non_protocol injection needed.
@@ -452,9 +479,31 @@ def run_teammate_loop(
                         stream=True,
                         events=TeammateEventShim(boss_session) if boss_session else None)
                 except Exception as _e:
-                    logger.error("teammate %s chat_create failed (model=%s): %s: %s",
-                                 name, model, type(_e).__name__, _e)
-                    break
+                    # §二.5: prompt-too-long recovery — compact and retry
+                    # instead of breaking immediately (which loses the
+                    # teammate's work and sends a bare "Done." to the boss).
+                    from agent_core.compaction import reactive_compact
+                    from agent_core.recovery import is_prompt_too_long_error
+                    if is_prompt_too_long_error(_e):
+                        logger.warning("teammate %s prompt too long — "
+                                       "reactive_compact and retry", name)
+                        try:
+                            messages[:] = reactive_compact(messages)
+                            response = adapter.chat_create(
+                                model=model, system=system, messages=messages,
+                                tools=sub_tools, max_tokens=8000,
+                                stream=True,
+                                events=TeammateEventShim(boss_session) if boss_session else None)
+                        except Exception as _e2:
+                            logger.error("teammate %s chat_create failed "
+                                         "after compaction: %s: %s", name,
+                                         type(_e2).__name__, _e2)
+                            break
+                    else:
+                        logger.error("teammate %s chat_create failed "
+                                     "(model=%s): %s: %s", name, model,
+                                     type(_e).__name__, _e)
+                        break
                 if getattr(response, "interrupted", False):
                     should_shutdown = True
                     break
@@ -477,17 +526,20 @@ def run_teammate_loop(
                             match = re.search(r"\((req_\d+)\)", output)
                             protocol_ctx["waiting_plan"] = (
                                 match.group(1) if match else output)
+                            protocol_ctx["waiting_plan_since"] = time.time()
                         else:
                             # T-H8: Permission check for teammate tools.
                             # Teammates run in background threads and can't
-                            # ask the user, so "ask" → deny. But the
-                            # hardcoded safety backstop (deny-list bash,
-                            # path escape) always runs.
+                            # ask the user, so we use DenyAllPermission —
+                            # "ask" → deny immediately (no 120s block), but
+                            # "allow" tools still run. The hardcoded safety
+                            # backstop (deny-list bash, path escape) always
+                            # runs via check_permission.
                             handler = sub_handlers.get(block.name)
                             try:
                                 from agent_core.hooks import check_permission
-                                from agent_core.permissions import Permission
-                                _perm = Permission()
+                                from agent_core.session import DenyAllPermission
+                                _perm = DenyAllPermission()
                                 _denied = check_permission(block, _perm)
                                 if _denied:
                                     output = (f"Permission denied: {_denied} "
@@ -499,23 +551,21 @@ def run_teammate_loop(
                                 else:
                                     output = call_tool_handler(
                                         handler, block.input, block.name)
-                            except ImportError:
-                                # Fallback: no permission module — just run
+                            except Exception as _he:
+                                # If permission check itself fails, log and
+                                # still execute — don't let a broken import
+                                # silently bypass all safety. The deny-list
+                                # in check_permission is the critical gate.
+                                logger.error("teammate %s permission check "
+                                             "raised %s: %s — executing tool "
+                                             "anyway", name, block.name,
+                                             type(_he).__name__, _he)
                                 try:
                                     output = call_tool_handler(
                                         handler, block.input, block.name)
-                                except Exception as _he:
+                                except Exception as _he2:
                                     output = (f"Error: {block.name} raised "
-                                              f"{type(_he).__name__}: {_he}")
-                                    logger.error("teammate %s %s raised %s: %s",
-                                                 name, block.name,
-                                                 type(_he).__name__, _he)
-                            except Exception as _he:
-                                output = (f"Error: {block.name} raised "
-                                          f"{type(_he).__name__}: {_he}")
-                                logger.error("teammate %s %s raised %s: %s",
-                                             name, block.name,
-                                             type(_he).__name__, _he)
+                                              f"{type(_he2).__name__}: {_he2}")
                         results.append({"type": "tool_result",
                                         "tool_use_id": block.id,
                                         "content": str(output)})

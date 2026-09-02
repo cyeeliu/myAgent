@@ -397,10 +397,20 @@ def start_team(team_name: str, task: str = "") -> str:
         wt_path = None
         try:
             res = create_worktree(wt_name)
-        except Exception:
+        except Exception as _wte:
             res = ""
+            # T-H4: warn when worktree creation fails — previously this was
+            # silently swallowed and the teammate ran in the main workspace
+            # with no isolation, which is a security/correctness concern.
+            logger.warning("Team %s: worktree creation failed for member %s "
+                           "(%s: %s) — teammate will run in the main workspace "
+                           "without isolation", team_name, mname,
+                           type(_wte).__name__, _wte)
         if isinstance(res, str) and res.startswith("Worktree '"):
             wt_path = str(_worktrees_dir() / wt_name)
+        elif not wt_path:
+            logger.warning("Team %s: member %s has no worktree isolation "
+                           "(create_worktree returned: %r)", team_name, mname, res)
 
         member_prompt = build_member_prompt(team_name, task, leader_name, m)
 
@@ -426,10 +436,19 @@ def start_team(team_name: str, task: str = "") -> str:
     leader_wt = None
     try:
         res = create_worktree(wt_name)
-    except Exception:
+    except Exception as _wte:
         res = ""
+        # T-H4: warn on worktree creation failure for leader too.
+        logger.warning("Team %s: worktree creation failed for leader %s "
+                       "(%s: %s) — leader will run in the main workspace "
+                       "without isolation", team_name, leader_name,
+                       type(_wte).__name__, _wte)
     if isinstance(res, str) and res.startswith("Worktree '"):
         leader_wt = str(_worktrees_dir() / wt_name)
+    elif not leader_wt:
+        logger.warning("Team %s: leader %s has no worktree isolation "
+                       "(create_worktree returned: %r)", team_name,
+                       leader_name, res)
 
     roster_for_prompt = [(mn, dn) for mn, dn, _ in member_roster]
     leader_prompt = build_leader_prompt(
@@ -437,13 +456,27 @@ def start_team(team_name: str, task: str = "") -> str:
         roster_for_prompt, persona=leader_persona,
     )
 
-    # Leader exit callback: unregister the bus tap and clear team state
-    # so a subsequent start_team with the same names doesn't hit stale entries.
+    # Collect all worktree names for cleanup on team exit (T-H5).
+    all_wt_names = [f"{team_name}-{leader_name}"] + \
+                   [f"{team_name}-{mn}" for mn, _, _ in member_roster]
+
+    # Leader exit callback: unregister the bus tap, clear team state, and
+    # clean up all worktrees (T-H5: previously worktrees were never deleted,
+    # accumulating on disk across team runs).
     def _leader_on_exit():
         unregister_bus_tap(session_key)
         registry.clear_team(team_name)
-        logger.info("Team %r leader %s exited — bus tap unregistered, state cleared",
-                     team_name, leader_name)
+        # T-H5: clean up worktrees. Use discard_changes=True because the
+        # team is done — any uncommitted work was already sent via BUS.
+        from agent_core.worktrees import remove_worktree
+        for wtn in all_wt_names:
+            try:
+                remove_worktree(wtn, discard_changes=True)
+            except Exception:
+                pass
+        logger.info("Team %r leader %s exited — bus tap unregistered, "
+                    "state cleared, %d worktree(s) cleaned up",
+                    team_name, leader_name, len(all_wt_names))
 
     spawn_teammate_thread(
         name=leader_name, role=leader_dname, prompt=leader_prompt,

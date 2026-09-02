@@ -24,7 +24,11 @@ def update_context(context: dict, messages: list) -> dict:
     out = dict(context)
     out["memories"] = memories
     out["connected_mcp"] = list(_mcp_clients().keys())
-    out["active_teammates"] = list(active_teammates.keys())
+    # C-H9: filter active_teammates by the current session_dir to prevent
+    # cross-session leakage (session B seeing session A's teammates).
+    from agent_core.env import session_dir
+    from agent_core.team_state import registry
+    out["active_teammates"] = registry.active_names_for_session(str(session_dir()))
     return out
 
 def prepare_context(messages: list) -> list:

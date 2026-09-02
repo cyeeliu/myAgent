@@ -20,7 +20,9 @@ import {
 } from '../types';
 import { useTodoStore } from './todoStore';
 
-const TOOL_TIMEOUT_MS = 12_000_000;
+// F-L5/F-M5: 120s is a sane timeout — the old 12_000_000ms (~3.3h) meant stale
+// tool executions spun forever after a reconnect that lost the tool_result event.
+const TOOL_TIMEOUT_MS = 120_000;
 const EVOLUTION_STATUS_END_VISIBLE_MS = 3_000;
 let evolutionStatusClearTimer: ReturnType<typeof setTimeout> | null = null;
 

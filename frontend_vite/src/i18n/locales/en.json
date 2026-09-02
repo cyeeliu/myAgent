@@ -228,8 +228,11 @@
     "newSession": "New Session",
     "sessionCreated": "Session created",
     "modePlan": "Planning Mode",
+    "modePlanDesc": "Explore first, execute after approval",
     "modeAgent": "Performance Mode",
+    "modeAgentDesc": "Execute directly, no approval needed",
     "modeAgentTeam": "Cluster Mode",
+    "modeAgentTeamDesc": "Multi-agent collaboration, auto-assign tasks",
     "modeAutoHarness": "Auto-Harness Mode",
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
     "recording": "Recording... (release to send)",
@@ -416,7 +419,9 @@
     "collapseSidebar": "Collapse Sidebar",
     "connectionStatus": "Connection Status",
     "language": "Language",
-    "appearance": "Appearance"
+    "appearance": "Appearance",
+    "searchSessions": "Search sessions...",
+    "noSessionsFound": "No sessions found"
   },
   "heartbeat": {
     "title": "Heartbeat Management",

@@ -5,7 +5,7 @@
  * Supports collapsed 48px icon-only mode matching the Pixso high-fidelity design.
  */
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import './SessionSidebar.css';
@@ -29,6 +29,9 @@ import appearanceSystemIcon from '../../assets/sidebar/appearance-system.svg';
 import appearanceDarkIcon from '../../assets/sidebar/appearance-dark.svg';
 import appearanceLightIcon from '../../assets/sidebar/appearance-light.svg';
 import { webRequest } from '../../services/webClient';
+import { useSessionStore } from '../../stores/sessionStore';
+import { SessionItem } from './SessionItem';
+import { Session } from '../../types';
 import {
   FEATURE_APP_UPDATER_UI,
   FEATURE_TEAMS_UI,
@@ -52,6 +55,9 @@ interface SessionSidebarProps {
   collapsed?: boolean;
   onCollapse?: () => void;
   onExpand?: () => void;
+  // F-H4: session list in sidebar
+  onRestoreSession?: (sessionId: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
 }
 
 interface NavItem {
@@ -318,17 +324,40 @@ function AdvancedConfigPanel({
 export function SessionSidebar({
   activeNav,
   onNavigate,
-  sessionId: _sessionId,
+  sessionId,
   appVersion,
   isConnected,
   onNewSession,
   collapsed = false,
   onCollapse,
   onExpand,
+  onRestoreSession,
+  onDeleteSession,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
   const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
   const advancedBtnRef = useRef<HTMLButtonElement>(null);
+
+  // F-H4: session list with search
+  const { sessions } = useSessionStore();
+  const [sessionSearch, setSessionSearch] = useState('');
+  const filteredSessions = useMemo(() => {
+    if (!sessionSearch.trim()) return sessions;
+    const q = sessionSearch.toLowerCase();
+    return sessions.filter((s) => {
+      const title = (s.title || s.session_id || '').toLowerCase();
+      return title.includes(q);
+    });
+  }, [sessions, sessionSearch]);
+
+  const handleRestoreSession = useCallback((sid: string) => {
+    onRestoreSession?.(sid);
+    onNavigate('chat');
+  }, [onRestoreSession, onNavigate]);
+
+  const handleDeleteSession = useCallback((sid: string) => {
+    onDeleteSession?.(sid);
+  }, [onDeleteSession]);
 
   // Tooltip state for collapsed mode
   const [hoveredNav, setHoveredNav] = useState<string | null>(null);
@@ -540,6 +569,38 @@ export function SessionSidebar({
           ))}
         </nav>
       </div>
+
+      {/* F-H4: Quick session list with search — switch sessions without leaving chat */}
+      {sessions.length > 0 && (
+        <div className="sidebar-sessions-section">
+          <div className="sidebar-sessions-header">
+            <span className="nav-section-label">{t('nav.sessions')}</span>
+          </div>
+          <input
+            type="text"
+            className="sidebar-sessions-search"
+            placeholder={t('sessionSidebar.searchSessions')}
+            value={sessionSearch}
+            onChange={(e) => setSessionSearch(e.target.value)}
+          />
+          <div className="sidebar-sessions-list">
+            {filteredSessions.slice(0, 15).map((s: Session) => (
+              <SessionItem
+                key={s.session_id}
+                session={s}
+                isActive={s.session_id === sessionId}
+                onClick={() => handleRestoreSession(s.session_id)}
+                onDelete={() => handleDeleteSession(s.session_id)}
+              />
+            ))}
+            {filteredSessions.length === 0 && (
+              <div className="sidebar-sessions-empty">
+                {t('sessionSidebar.noSessionsFound')}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Settings Section */}
       <div className="nav-section">

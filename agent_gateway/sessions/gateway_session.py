@@ -230,6 +230,20 @@ class GatewaySession:
                 self._on_background_complete()
             except Exception:
                 pass
+            # Race backstop: a team message (e.g., leader's summary) may have
+            # arrived while this turn was in flight. The A2A callback
+            # (_on_team_message) saw the worker alive and returned without
+            # starting a new turn. Now that the turn has ended and _worker is
+            # cleared, re-check the boss inbox. If there are pending team
+            # messages, start a follow-up turn so inject_team_messages drains
+            # them and the boss can summarize for the user.
+            # _on_background_complete above may have already started a turn —
+            # in that case _on_team_message sees the worker alive and returns
+            # (the new turn's inject_team_messages will drain the inbox).
+            try:
+                self._on_team_message("", "", "result", {})
+            except Exception:
+                pass
 
     def interrupt(self):
         self.agent.interrupted = True

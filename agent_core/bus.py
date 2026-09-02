@@ -98,11 +98,15 @@ class MessageBus:
                 tap(from_agent, to_agent, content, msg_type, metadata or {})
             except Exception:
                 pass
-        # A2A: when a teammate sends a substantive message (result/message) to
-        # the boss, trigger the team callback so the gateway can re-invoke the
-        # boss session with a fresh turn. Protocol messages (plan_approval_*
-        # /shutdown_*) are handled by the boss listener / check_inbox instead.
-        if to_agent == "boss" and msg_type in ("result", "message"):
+        # A2A: when a teammate sends a substantive message to the boss,
+        # trigger the team callback so the gateway can re-invoke the boss
+        # session with a fresh turn. This includes result, message, and
+        # plan_approval_request (so the boss can review a leader's plan
+        # without blocking on `wait`). Protocol handshake messages
+        # (plan_approval_response, shutdown_request/response) are handled
+        # by the boss listener / check_inbox instead.
+        if to_agent == "boss" and msg_type in (
+                "result", "message", "plan_approval_request"):
             tcb = _team_callbacks.get(str(mdir.parent))
             if tcb is not None:
                 try:
@@ -174,7 +178,10 @@ class ProtocolState:
 pending_requests: dict[str, ProtocolState] = {}
 
 def new_request_id() -> str:
-    return f"req_{random.randint(0, 999999):06d}"
+    # T-L1: use uuid4 for collision-free request IDs instead of
+    # random.randint(0, 999999) which only has 1M possibilities.
+    import uuid
+    return f"req_{uuid.uuid4().hex[:12]}"
 
 def match_response(response_type: str, request_id: str, approve: bool):
     # Responses are matched by request_id so one protocol reply cannot approve
@@ -187,6 +194,9 @@ def match_response(response_type: str, request_id: str, approve: bool):
     if state.type == "plan_approval" and response_type != "plan_approval_response":
         return
     state.status = "approved" if approve else "rejected"
+    # T-H3: delete the entry after matching so pending_requests doesn't
+    # grow unboundedly. Each request is matched at most once.
+    pending_requests.pop(request_id, None)
 
 def consume_boss_inbox(route_protocol=True) -> list[dict]:
     msgs = BUS.read_inbox("boss")
@@ -197,4 +207,18 @@ def consume_boss_inbox(route_protocol=True) -> list[dict]:
             msg_type = msg.get("type", "")
             if req_id and msg_type.endswith("_response"):
                 match_response(msg_type, req_id, meta.get("approve", False))
+    # T-H3: sweep stale pending_requests (entries that never got a response).
+    # Anything older than 10 minutes is unlikely to ever be matched — the
+    # teammate that sent it has either exited or moved on.
+    _sweep_stale_requests()
     return msgs
+
+_REQUEST_TTL = 600  # 10 minutes
+
+def _sweep_stale_requests():
+    """Remove pending_requests older than _REQUEST_TTL seconds."""
+    now = time.time()
+    stale = [rid for rid, st in pending_requests.items()
+             if now - st.created_at > _REQUEST_TTL]
+    for rid in stale:
+        pending_requests.pop(rid, None)

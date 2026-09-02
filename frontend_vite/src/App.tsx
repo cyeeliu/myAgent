@@ -172,6 +172,50 @@ function ErrorFallback({ error }: { error: Error | null }) {
   );
 }
 
+// F-M7: Panel-level error boundary — isolates panel crashes so the rest of the app
+// (especially chat) keeps working. Shows a compact in-panel error with a retry button.
+class PanelErrorBoundary extends Component<
+  { children: ReactNode; panelName?: string },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: ReactNode; panelName?: string }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('Panel Error:', this.props.panelName ?? 'unknown', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full p-8 bg-bg text-text">
+          <div className="max-w-lg card w-full">
+            <h2 className="text-lg font-bold text-danger mb-2">
+              {this.props.panelName ?? 'Panel'} Error
+            </h2>
+            <p className="text-text-muted text-sm mb-3">
+              {this.state.error?.message || 'An unexpected error occurred.'}
+            </p>
+            <button
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="btn primary text-sm"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 
 
 // 会话 ID 持久化（使用 sessionStorage：同标签页刷新保留，多标签页隔离）
@@ -326,7 +370,7 @@ function AppContent() {
 
   const { setCurrentSession, setSessions, setAvailableModels, setMode, mode, heartbeatMessage,
     heartbeatUpdatedAt, teamTaskEvents, teamTasks, teamMembers, setTeamLeaderMemberIds,
-    updateSession } = useSessionStore();
+    updateSession, removeSession } = useSessionStore();
   const {
     teamAreaExpanded,
     teamAreaActiveTab,
@@ -1533,6 +1577,15 @@ function AppContent() {
         collapsed={sidebarCollapsed}
         onCollapse={() => setSidebarCollapsed(true)}
         onExpand={() => setSidebarCollapsed(false)}
+        onRestoreSession={(sid) => void handleRestoreSession(sid)}
+        onDeleteSession={async (sid) => {
+          try {
+            await request('session.delete', { session_id: sid });
+            removeSession(sid);
+          } catch (error) {
+            console.error('Failed to delete session:', error);
+          }
+        }}
       />
 
       {/* Main Content */}
@@ -1612,48 +1665,60 @@ function AppContent() {
         )}
         {activeNav === 'agents' && (
           <div className="app-section">
-            <AgentPanel sessionId={sessionId} />
+            <PanelErrorBoundary panelName="Agent">
+              <AgentPanel sessionId={sessionId} />
+            </PanelErrorBoundary>
           </div>
         )}
         {FEATURE_TEAMS_UI && activeNav === 'teams' && (
           <div className="app-section">
-            <TeamPanel />
+            <PanelErrorBoundary panelName="Team">
+              <TeamPanel />
+            </PanelErrorBoundary>
           </div>
         )}
         {activeNav === 'sessions' && (
           <div className="app-section">
-            <SessionsPanel
-              currentSessionId={sessionId}
-              isConnected={isConnected}
-              isProcessing={isProcessing}
-              onRestoreSession={handleRestoreSession}
-            />
+            <PanelErrorBoundary panelName="Sessions">
+              <SessionsPanel
+                currentSessionId={sessionId}
+                isConnected={isConnected}
+                isProcessing={isProcessing}
+                onRestoreSession={handleRestoreSession}
+              />
+            </PanelErrorBoundary>
           </div>
         )}
         {FEATURE_HEARTBEAT_UI && activeNav === 'heartbeat' && (
           <div className="app-section">
-            <HeartbeatPanel />
+            <PanelErrorBoundary panelName="Heartbeat">
+              <HeartbeatPanel />
+            </PanelErrorBoundary>
           </div>
         )}
         {FEATURE_CRON_UI && activeNav === 'cron' && (
           <div className="app-section">
-            <CronPanel sessionId={sessionId} />
+            <PanelErrorBoundary panelName="Cron">
+              <CronPanel sessionId={sessionId} />
+            </PanelErrorBoundary>
           </div>
         )}
         {activeNav === 'configpanel' && (
           <div className="app-section">
-            <ConfigPanel
-              config={serverConfig}
-              isConnected={isConnected}
-              onSaveConfig={saveConfigAndRestart}
-              onSaveAllConfig={saveAllConfigAndRestart}
-              onValidateModel={validateModelConfig}
-              initialExpandGroupTag={configInitialExpandGroup}
-              onModelsReplaceAll={handleModelsReplaceAll}
-              onModelValidate={validateModelConfig}
-              onModelsRefresh={handleModelsRefresh}
-              onAgentsTeamsSave={handleAgentsTeamsSave}
-            />
+            <PanelErrorBoundary panelName="Config">
+              <ConfigPanel
+                config={serverConfig}
+                isConnected={isConnected}
+                onSaveConfig={saveConfigAndRestart}
+                onSaveAllConfig={saveAllConfigAndRestart}
+                onValidateModel={validateModelConfig}
+                initialExpandGroupTag={configInitialExpandGroup}
+                onModelsReplaceAll={handleModelsReplaceAll}
+                onModelValidate={validateModelConfig}
+                onModelsRefresh={handleModelsRefresh}
+                onAgentsTeamsSave={handleAgentsTeamsSave}
+              />
+            </PanelErrorBoundary>
           </div>
         )}
         {FEATURE_LOGS_UI && activeNav === 'logspanel' && (

@@ -86,6 +86,20 @@ class FuturePermission(Permission):
         except Exception:
             return {"allow": False, "modify": None}
 
+
+class DenyAllPermission(Permission):
+    """Permission subclass for background teammate threads.
+
+    Teammates run in daemon threads with no user to ask. The policy "ask"
+    level would block forever (CliPermission reads stdin; FuturePermission
+    waits 120s for a UI response that never comes). Instead, we deny any
+    tool that isn't explicitly "allow" — the hardcoded safety backstop in
+    check_permission still runs (deny-list bash, path escape), so this
+    only affects the policy gate, not the safety net.
+    """
+    def request(self, block) -> dict:
+        return {"allow": False, "modify": None}
+
 @dataclass
 class Session:
     """Per-conversation state lifted out of module globals.

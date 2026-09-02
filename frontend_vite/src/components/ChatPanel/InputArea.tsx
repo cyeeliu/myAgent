@@ -193,21 +193,22 @@ export function InputArea({
   const isTeamMode = mode === 'team';
   const isAutoHarnessMode = mode === 'auto_harness';
   const hasHistoryMessages = messages.length > 0;
-  const modes: Array<{ value: AgentMode; label: string; icon: JSX.Element; hidden?: boolean }> = [
-    { value: 'agent.plan', label: t('chat.modePlan'), icon: (
+  // F-L8: add descriptions to mode selector so users understand each mode
+  const modes: Array<{ value: AgentMode; label: string; description: string; icon: JSX.Element; hidden?: boolean }> = [
+    { value: 'agent.plan', label: t('chat.modePlan'), description: t('chat.modePlanDesc'), icon: (
       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z" />
       </svg>
     )},
-    { value: 'agent.fast', label: t('chat.modeAgent'), icon: (
+    { value: 'agent.fast', label: t('chat.modeAgent'), description: t('chat.modeAgentDesc'), icon: (
       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437l1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008z" />
       </svg>
     )},
-    { value: 'team', label: t('chat.modeAgentTeam'), icon: (
+    { value: 'team', label: t('chat.modeAgentTeam'), description: t('chat.modeAgentTeamDesc'), icon: (
       <ClusterIcon className="w-4 h-4" />
     )},
-    { value: 'auto_harness', label: t('chat.modeAutoHarness'), icon: (
+    { value: 'auto_harness', label: t('chat.modeAutoHarness'), description: t('chat.modeAutoHarnessDesc'), icon: (
       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12a7.5 7.5 0 0015 0m-15 0a7.5 7.5 0 1115 0m-15 0H3m16.5 0H21m-1.5 0H12m-8.457 3.077l1.41-.513m14.095-5.13l1.41-.513M5.106 17.785l1.15-.964m11.69-9.765l1.15-.964m-3.093 5.25l.906-1.356m-6.768 1.356l.906-1.356M9 12H7.5m6.5 0H12m-1.5 0a1.5 1.5 0 103 0 1.5 1.5 0 00-3 0z" />
       </svg>
@@ -963,7 +964,11 @@ export function InputArea({
                       <span className="chat-mode-select__icon" aria-hidden="true">
                         {m.icon}
                       </span>
-                      <span className="chat-mode-select__label">{m.label}</span>
+                      <span className="chat-mode-select__label-group">
+                        <span className="chat-mode-select__label">{m.label}</span>
+                        {/* F-L8: show mode description */}
+                        <span className="chat-mode-select__desc">{m.description}</span>
+                      </span>
                     </span>
                     {mode === m.value && (
                       <svg className="chat-mode-select__check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">

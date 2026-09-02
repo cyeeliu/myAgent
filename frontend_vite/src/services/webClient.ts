@@ -85,6 +85,8 @@ class WebClient {
   private connectPromise: Promise<void> | null = null;
   private lastConnectOptions: WebConnectOptions = {};
   private requestSeq = 0;
+  // F-C1: track the highest event seq seen so we can request replay on reconnect
+  private lastSeq: number | null = null;
 
   getState(): WebConnectionState {
     return this.state;
@@ -92,6 +94,11 @@ class WebClient {
 
   getInflightCount(): number {
     return this.pending.size;
+  }
+
+  // F-C1: reset seq tracking — call when switching to a new session
+  resetLastSeq(): void {
+    this.lastSeq = null;
   }
 
   onStateChange(handler: StateHandler): () => void {
@@ -421,6 +428,10 @@ class WebClient {
   }
 
   private dispatchEvent(event: WsEvent): void {
+    // F-C1: track the highest seq for reconnect replay
+    if (typeof event.seq === 'number' && (this.lastSeq === null || event.seq > this.lastSeq)) {
+      this.lastSeq = event.seq;
+    }
     const handlers = this.handlers.get(event.event);
     if (!handlers || handlers.size === 0) {
       return;
@@ -480,6 +491,10 @@ class WebClient {
     if (options.apiBase) params.set('api_base', options.apiBase);
     if (options.model) params.set('model', options.model);
     if (options.projectPath) params.set('project_path', options.projectPath);
+    // F-C1: on reconnect, send last_seq so the backend replays missed events
+    if (this.reconnectAttempts > 0 && this.lastSeq !== null) {
+      params.set('last_seq', String(this.lastSeq));
+    }
     const query = params.toString();
     const target = `${base}${path}`;
     return query ? `${target}?${query}` : target;

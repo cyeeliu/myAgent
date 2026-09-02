@@ -53,20 +53,34 @@ function formatTime(
 export function SessionItem({ session, isActive, onClick, onDelete }: SessionItemProps) {
   const { t, i18n } = useTranslation();
   const [showDelete, setShowDelete] = useState(false);
+  // F-H6: two-step delete confirmation to prevent accidental data loss
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   
   // 优先展示会话标题，缺失时回退到会话 ID 片段
   const preview = session.title?.trim() || session.session_id.slice(0, 8);
 
-  const handleDelete = (e: React.MouseEvent) => {
+  const handleDeleteClick = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (!confirmingDelete) {
+      // First click: enter confirmation state
+      setConfirmingDelete(true);
+      return;
+    }
+    // Second click: actually delete
+    setConfirmingDelete(false);
     onDelete();
+  };
+
+  const handleDeleteCancel = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfirmingDelete(false);
   };
 
   return (
     <div
       className="relative group"
       onMouseEnter={() => setShowDelete(true)}
-      onMouseLeave={() => setShowDelete(false)}
+      onMouseLeave={() => { setShowDelete(false); setConfirmingDelete(false); }}
     >
       <button
         onClick={onClick}
@@ -111,10 +125,10 @@ export function SessionItem({ session, isActive, onClick, onDelete }: SessionIte
         )}
       </button>
 
-      {/* 删除按钮 */}
-      {showDelete && (
+      {/* 删除按钮 — F-H6: two-step confirmation */}
+      {showDelete && !confirmingDelete && (
         <button
-          onClick={handleDelete}
+          onClick={handleDeleteClick}
           className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-text-muted hover:text-danger hover:bg-danger-subtle transition-colors"
           title={t('sessions.delete')}
         >
@@ -122,6 +136,28 @@ export function SessionItem({ session, isActive, onClick, onDelete }: SessionIte
             <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
           </svg>
         </button>
+      )}
+      {confirmingDelete && (
+        <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1 bg-danger-subtle rounded-md px-1 py-0.5 shadow-sm z-10">
+          <button
+            onClick={handleDeleteClick}
+            className="p-1 rounded text-danger hover:bg-danger hover:text-white transition-colors text-xs font-medium"
+            title={t('sessions.delete')}
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+            </svg>
+          </button>
+          <button
+            onClick={handleDeleteCancel}
+            className="p-1 rounded text-text-muted hover:bg-secondary transition-colors text-xs font-medium"
+            title={t('common.cancel')}
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
       )}
     </div>
   );

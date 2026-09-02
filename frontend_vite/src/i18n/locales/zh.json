@@ -228,8 +228,11 @@
     "newSession": "新建会话",
     "sessionCreated": "已新建会话",
     "modePlan": "规划模式",
+    "modePlanDesc": "先探索再执行，需审批后操作",
     "modeAgent": "性能模式",
+    "modeAgentDesc": "直接执行，无需审批",
     "modeAgentTeam": "集群模式",
+    "modeAgentTeamDesc": "多智能体协作，自动分配任务",
     "modeAutoHarness": "自优化模式",
     "modeAutoHarnessDesc": "自动分析并优化目标仓库",
     "recording": "正在录音...（松开按钮自动发送）",
@@ -416,7 +419,9 @@
     "collapseSidebar": "收起侧边栏",
     "connectionStatus": "连接状态",
     "language": "语言",
-    "appearance": "外观"
+    "appearance": "外观",
+    "searchSessions": "搜索会话...",
+    "noSessionsFound": "未找到会话"
   },
   "heartbeat": {
     "title": "心跳管理",
