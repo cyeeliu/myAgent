@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from . import sessions, agents, models, misc, file_api
+from . import sessions, agents, models, misc, file_api, eval
 
 
 def include_routers(app: FastAPI) -> None:
@@ -17,6 +17,7 @@ def include_routers(app: FastAPI) -> None:
     app.include_router(models.router)
     app.include_router(misc.router)
     app.include_router(file_api.router)
+    app.include_router(eval.router)
     # SSE routes are registered via sse.register (legacy pattern).
     from agent_gateway import sse
     from agent_gateway.sessions import manager

@@ -100,6 +100,16 @@ class ReqMethod(str, Enum):
     CHANNEL_GET = "channel.get"
     HEARTBEAT_PING = "heartbeat.ping"
 
+    # ── evaluation ──
+    EVAL_DATASETS_LIST = "eval.datasets.list"
+    EVAL_RUN_START = "eval.run.start"
+    EVAL_RUN_LIST = "eval.run.list"
+    EVAL_RUN_GET = "eval.run.get"
+    EVAL_RUN_CANCEL = "eval.run.cancel"
+    EVAL_RUN_DELETE = "eval.run.delete"
+    EVAL_COMPARE = "eval.compare"
+    EVAL_TREND = "eval.trend"
+
     @classmethod
     def from_str(cls, name: str) -> Optional["ReqMethod"]:
         try:

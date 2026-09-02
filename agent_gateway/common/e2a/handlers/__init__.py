@@ -15,4 +15,5 @@ from . import (  # noqa: F401 — imports for side effect (handler registration)
     agents,
     files,
     misc,
+    eval,
 )

@@ -31,7 +31,8 @@
     "config": "配置信息",
     "browser": "浏览器服务",
     "logs": "日志",
-    "update": "更新"
+    "update": "更新",
+    "evals": "评测"
   },
   "team": {
     "members": "团队成员",
@@ -1809,6 +1810,29 @@
   },
   "security": {
     "contentRetracted": "内容已因安全原因撤回"
+  },
+  "evals": {
+    "dataset": "数据集",
+    "model": "模型",
+    "mode": "模式",
+    "modeOnline": "在线",
+    "modeMock": "模拟",
+    "repeat": "重复",
+    "startRun": "开始评测",
+    "cancel": "取消",
+    "runHistory": "运行历史",
+    "noRuns": "暂无评测记录",
+    "progress": "进度",
+    "scorecard": "计分卡",
+    "taskResults": "任务结果",
+    "taskId": "任务 ID",
+    "status": "状态",
+    "metrics": "指标",
+    "judge": "判定",
+    "taskTrace": "任务追踪",
+    "selectRunPrompt": "从左侧选择一个评测运行查看结果",
+    "compare": "对比",
+    "trend": "趋势"
   },
   "rightSidebar": {
     "open": "打开侧边栏",

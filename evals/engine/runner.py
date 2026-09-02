@@ -53,20 +53,45 @@ class EvalRunner:
         self.workspace = workspace or WorkspaceIsolator()
         self._orig_chat_create = None
 
-    def run_dataset(self, dataset: dict, opts: dict | None = None) -> dict:
-        """Run all tasks in a dataset. Returns the full report dict."""
+    def run_dataset(self, dataset: dict, opts: dict | None = None,
+                    on_progress: Any = None) -> dict:
+        """Run all tasks in a dataset. Returns the full report dict.
+
+        Args:
+            on_progress: optional callback ``fn(event_dict)`` called after
+                each task completes with ``{task_id, rep, status, ...}``.
+        """
         opts = opts or {}
         run_id = opts.get("run_id", self._make_run_id(dataset))
         model = opts.get("model", os.environ.get("MODEL_ID", "unknown"))
         mode = opts.get("mode", "online")
+        # E-M2: Honor repeat and limit from opts.
+        global_repeat = max(1, int(opts.get("repeat", 1)))
+        limit = int(opts.get("limit", 0))
         all_results: list[TaskResult] = []
 
         tasks = dataset.get("tasks", [])
+        # E-M2: Apply limit slicing if specified.
+        if limit > 0:
+            tasks = tasks[:limit]
         for task in tasks:
             repeat = task.get("repeat", 1) if mode != "mock" else 1
+            # E-M2: Multiply per-task repeat by global repeat factor.
+            repeat = max(1, repeat * global_repeat) if mode != "mock" else 1
             for rep in range(repeat):
                 result = self._run_one(task, rep, run_id, model, mode)
                 all_results.append(result)
+                # E-H2: Fire progress callback after each task.
+                if on_progress is not None:
+                    try:
+                        on_progress({
+                            "task_id": result.task_id,
+                            "rep": result.rep,
+                            "status": result.status,
+                            "error": result.error,
+                        })
+                    except Exception:
+                        pass
 
         # Aggregate
         from evals.report.aggregate import aggregate_results

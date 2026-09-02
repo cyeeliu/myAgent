@@ -36,6 +36,10 @@ _KIND_MAP = {
     "team_task": "team.task",
     "team_event": "team.event",
     "team_message": "team.message",
+    "eval_progress": "eval.progress",
+    "eval_task_complete": "eval.task_complete",
+    "eval_run_complete": "eval.run.complete",
+    "eval_run_error": "eval.run.error",
 }
 
 

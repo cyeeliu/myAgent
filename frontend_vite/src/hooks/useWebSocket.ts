@@ -29,7 +29,7 @@ import {
   ContextCompressionSummary,
   WsEvent,
 } from '../types';
-import { useChatStore, useTodoStore, useSessionStore, useHarnessStore } from '../stores';
+import { useChatStore, useTodoStore, useSessionStore, useHarnessStore, useEvalStore } from '../stores';
 import type { TeamTask, TeamTaskStatus } from '../stores/sessionStore';
 import { webClient } from '../services/webClient';
 import {
@@ -2724,6 +2724,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         setProcessing(false);
         setThinking(false);
         useHarnessStore.getState().setHarnessRunning(false);
+      }),
+      // ── Evaluation events ──
+      webClient.on('eval.progress', ({ payload }) => {
+        useEvalStore.getState().onEvalProgress(payload as any);
+      }),
+      webClient.on('eval.task_complete', ({ payload }) => {
+        useEvalStore.getState().onEvalTaskComplete(payload as any);
+      }),
+      webClient.on('eval.run.complete', ({ payload }) => {
+        useEvalStore.getState().onEvalRunComplete(payload as any);
+      }),
+      webClient.on('eval.run.error', ({ payload }) => {
+        useEvalStore.getState().onEvalRunError(payload as any);
       }),
     ];
 

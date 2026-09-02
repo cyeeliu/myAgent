@@ -86,6 +86,9 @@ class ServiceContainer:
         await self.message_handler.start()
         await self.channel_manager.start_all()
         await self.heartbeat.start()
+        # E-C1: eval event callback is wired lazily in eval.run.start handler
+        # (see eval.py:_ensure_event_callback) so events route to the
+        # originating session's EventPipe, not broadcast to all connections.
 
     async def stop(self) -> None:
         """Async shutdown: stop services + close pools."""

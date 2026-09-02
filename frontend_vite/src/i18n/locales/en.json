@@ -31,7 +31,8 @@
     "config": "Configuration",
     "browser": "Browser Service",
     "logs": "Logs",
-    "update": "Updates"
+    "update": "Updates",
+    "evals": "Evals"
   },
   "team": {
     "members": "Team Members",
@@ -1807,6 +1808,29 @@
       "sendFile": "Send File",
       "sendFileDesc": "Send files to user"
     }
+  },
+  "evals": {
+    "dataset": "Dataset",
+    "model": "Model",
+    "mode": "Mode",
+    "modeOnline": "Online",
+    "modeMock": "Mock",
+    "repeat": "Repeat",
+    "startRun": "Start Eval",
+    "cancel": "Cancel",
+    "runHistory": "Run History",
+    "noRuns": "No runs yet",
+    "progress": "Progress",
+    "scorecard": "Scorecard",
+    "taskResults": "Task Results",
+    "taskId": "Task ID",
+    "status": "Status",
+    "metrics": "Metrics",
+    "judge": "Judge",
+    "taskTrace": "Task Trace",
+    "selectRunPrompt": "Select a run from the left to view results",
+    "compare": "Compare",
+    "trend": "Trend"
   },
   "rightSidebar": {
     "open": "Open sidebar",

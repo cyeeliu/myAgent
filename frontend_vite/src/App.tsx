@@ -16,6 +16,7 @@ import { HeartbeatPanel } from './components/HeartbeatPanel';
 import CronPanel from './components/CronPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { ConfigPanel } from './components/ConfigPanel';
+import { EvalsPanel } from './components/EvalsPanel';
 import { LogsPanel } from './components/LogsPanel';
 import { ChannelsPanel } from './components/ChannelsPanel';
 import { BrowserPanel } from './components/BrowserPanel';
@@ -36,6 +37,7 @@ import {
   FEATURE_EXTENSIONS_UI,
   FEATURE_LOGS_UI,
   FEATURE_BROWSER_UI,
+  FEATURE_EVALS_UI,
 } from './featureFlags';
 import { HeartbeatMessageModal } from './features/HeartbeatMessageModal';
 import {
@@ -70,7 +72,7 @@ import {
 import type { DesktopSaveApiResult } from './utils/desktopSave';
 import './App.css';
 
-type MainNavKey = 'chat' | 'skills' | 'agents' | 'teams' | 'sessions' | 'heartbeat' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'logspanel' | 'browserpanel' | 'updatepanel';
+type MainNavKey = 'chat' | 'skills' | 'agents' | 'teams' | 'sessions' | 'heartbeat' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'logspanel' | 'browserpanel' | 'updatepanel' | 'evals';
 
 type AgentsTeamsSavePayload = {
   agents: Record<string, {
@@ -341,6 +343,7 @@ function AppContent() {
       logspanel: !FEATURE_LOGS_UI,
       browserpanel: !FEATURE_BROWSER_UI,
       updatepanel: !FEATURE_APP_UPDATER_UI,
+      evals: !FEATURE_EVALS_UI,
     };
     if (disabled[activeNav]) {
       setActiveNav('chat');
@@ -1692,6 +1695,13 @@ function AppContent() {
           <div className="app-section">
             <PanelErrorBoundary panelName="Agent">
               <AgentPanel sessionId={sessionId} />
+            </PanelErrorBoundary>
+          </div>
+        )}
+        {FEATURE_EVALS_UI && activeNav === 'evals' && (
+          <div className="app-section">
+            <PanelErrorBoundary panelName="Evals">
+              <EvalsPanel />
             </PanelErrorBoundary>
           </div>
         )}

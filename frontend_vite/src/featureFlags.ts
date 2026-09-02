@@ -15,3 +15,4 @@ export const FEATURE_CHANNELS_UI = false;
 export const FEATURE_EXTENSIONS_UI = false;
 export const FEATURE_LOGS_UI = false;
 export const FEATURE_BROWSER_UI = false;
+export const FEATURE_EVALS_UI = true;

@@ -41,9 +41,10 @@ import {
   FEATURE_EXTENSIONS_UI,
   FEATURE_LOGS_UI,
   FEATURE_BROWSER_UI,
+  FEATURE_EVALS_UI,
 } from '../../featureFlags';
 
-type MainNavKey = 'chat' | 'skills' | 'agents' | 'teams' | 'sessions' | 'heartbeat' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'logspanel' | 'browserpanel' | 'updatepanel';
+type MainNavKey = 'chat' | 'skills' | 'agents' | 'teams' | 'sessions' | 'heartbeat' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'logspanel' | 'browserpanel' | 'updatepanel' | 'evals';
 
 interface SessionSidebarProps {
   activeNav: MainNavKey;
@@ -84,6 +85,15 @@ const mainNavItems: NavItem[] = [
   { key: 'skills', labelKey: 'nav.skills', icon: <img src={skillIcon} alt="" /> },
   { key: 'channels', labelKey: 'nav.channels', icon: <img src={channelIcon} alt="" /> },
   { key: 'extensions', labelKey: 'nav.extensions', icon: <img src={pluginIcon} alt="" /> },
+  {
+    key: 'evals',
+    labelKey: 'nav.evals',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+  },
 ];
 
 const settingsNavItems: NavItem[] = [
@@ -108,6 +118,7 @@ const NAV_FLAG: Record<MainNavKey, boolean> = {
   logspanel: FEATURE_LOGS_UI,
   browserpanel: FEATURE_BROWSER_UI,
   updatepanel: FEATURE_APP_UPDATER_UI,
+  evals: FEATURE_EVALS_UI,
 };
 const visibleMainNavItems = mainNavItems.filter((item) => NAV_FLAG[item.key]);
 const visibleSettingsNavItems = settingsNavItems.filter((item) => NAV_FLAG[item.key]);
