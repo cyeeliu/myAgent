@@ -1806,5 +1806,19 @@
       "sendFile": "Send File",
       "sendFileDesc": "Send files to user"
     }
+  },
+  "rightSidebar": {
+    "open": "Open sidebar",
+    "close": "Close sidebar",
+    "tabFiles": "Files",
+    "tabEditor": "Editor",
+    "tabTerminal": "Terminal",
+    "loading": "Loading...",
+    "error": "Failed to load",
+    "emptyWorkspace": "Workspace is empty",
+    "noFileSelected": "Select a file from the file list",
+    "terminalWelcome": "Terminal ready. Type a command and press Enter (Ctrl+L to clear)",
+    "terminalPlaceholder": "Type a command...",
+    "terminalRunning": "Executing..."
   }
 }

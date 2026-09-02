@@ -7,6 +7,7 @@
 import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo } from 'react';
 import { ChatPanel } from './components/ChatPanel';
 import { SessionSidebar } from './components/SessionSidebar';
+import { RightSidebar } from './components/RightSidebar';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentPanel } from './components/AgentPanel/index';
 import { TeamPanel } from './components/TeamPanel';
@@ -302,6 +303,8 @@ function AppContent() {
   const [hasVisitedSkills, setHasVisitedSkills] = useState(false);
   const [hasVisitedChannels, setHasVisitedChannels] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(380);
   const startupUpdateCheckRef = useRef(false);
   /** 从 SkillNet 等入口跳转配置页时，首次展开对应配置分组（如第三方服务） */
   const [configInitialExpandGroup, setConfigInitialExpandGroup] = useState<string | null>(null);
@@ -1604,60 +1607,82 @@ function AppContent() {
 
         {activeNav === 'chat' && (
           <>
-            <div className={`flex-1 flex min-h-0 overflow-hidden ${isTeamAreaExpanded ? '' : 'card'}`}>
-              {/* Chat Panel - 在展开时可拖拽调整宽度 */}
-              <div
-                className={`flex flex-col min-w-0 min-h-0 ${isTeamAreaExpanded ? '' : 'flex-1'}`}
-                style={isTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : undefined}
-              >
-                <div className={`flex-1 min-h-0 ${isTeamAreaExpanded ? 'card rounded-l-lg rounded-r-none' : ''}`}>
-                  <ChatPanel
-                    onSendMessage={handleSendMessage}
-                    onPersistMedia={handlePersistMedia}
-                    onInterrupt={handleInterrupt}
-                    onCancel={handleCancel}
-                    onSwitchMode={handleSwitchMode}
-                    isProcessing={isProcessing}
-                    onNewSession={handleNewSession}
-                    onUserAnswer={handleUserAnswer}
-                    onExportShare={handleExportShare}
-                    isExportingShare={isExportingShare}
-                    canExportShare={Boolean(sessionId && sessionId !== 'new' && (!isProcessing || isPaused))}
-                    teamAreaExpanded={isTeamAreaExpanded}
-                    historyPager={
-                      historyPagerMeta
-                        ? {
-                            loadedPages: historyPagerMeta.loadedPages,
-                            totalPages: historyPagerMeta.totalPages,
-                            loadingMore: historyLoadingMore,
-                            onLoadMore: handleLoadMoreHistory,
-                          }
-                        : null
-                    }
-                  />
+            {/* Right sidebar toggle button */}
+            <button
+              className={`right-sidebar-toggle ${rightSidebarOpen ? 'right-sidebar-toggle--active' : ''}`}
+              onClick={() => setRightSidebarOpen((v) => !v)}
+              title={rightSidebarOpen ? t('rightSidebar.close') : t('rightSidebar.open')}
+              style={{ position: 'absolute', top: 12, right: 16, zIndex: 10 }}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v16.5m16.5-16.5v16.5M3.75 8.25h16.5M3.75 15.75h16.5" />
+              </svg>
+            </button>
+
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+              <div className={`flex-1 flex min-h-0 overflow-hidden ${isTeamAreaExpanded ? '' : 'card'}`}>
+                {/* Chat Panel - 在展开时可拖拽调整宽度 */}
+                <div
+                  className={`flex flex-col min-w-0 min-h-0 ${isTeamAreaExpanded ? '' : 'flex-1'}`}
+                  style={isTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : undefined}
+                >
+                  <div className={`flex-1 min-h-0 ${isTeamAreaExpanded ? 'card rounded-l-lg rounded-r-none' : ''}`}>
+                    <ChatPanel
+                      onSendMessage={handleSendMessage}
+                      onPersistMedia={handlePersistMedia}
+                      onInterrupt={handleInterrupt}
+                      onCancel={handleCancel}
+                      onSwitchMode={handleSwitchMode}
+                      isProcessing={isProcessing}
+                      onNewSession={handleNewSession}
+                      onUserAnswer={handleUserAnswer}
+                      onExportShare={handleExportShare}
+                      isExportingShare={isExportingShare}
+                      canExportShare={Boolean(sessionId && sessionId !== 'new' && (!isProcessing || isPaused))}
+                      teamAreaExpanded={isTeamAreaExpanded}
+                      historyPager={
+                        historyPagerMeta
+                          ? {
+                              loadedPages: historyPagerMeta.loadedPages,
+                              totalPages: historyPagerMeta.totalPages,
+                              loadingMore: historyLoadingMore,
+                              onLoadMore: handleLoadMoreHistory,
+                            }
+                          : null
+                      }
+                    />
+                  </div>
                 </div>
+
+                {/* 可拖拽分割线 */}
+                {isTeamAreaExpanded && (
+                  <div
+                    className="shrink-0 w-1 cursor-col-resize bg-[var(--bg)] hover:bg-gray-400 active:bg-gray-500 transition-colors"
+                    onMouseDown={handleDividerMouseDown}
+                  />
+                )}
+
+                {/* Tool Panel / Expanded Team Panel */}
+                {toolPanelHasContent && (
+                  <ToolPanel
+                    sessionId={sessionId}
+                    teamAreaExpanded={teamAreaExpanded}
+                    teamAreaActiveTab={teamAreaActiveTab}
+                    teamAreaActiveDetailTab={teamAreaActiveDetailTab}
+                    teamAreaSelectedMemberId={teamAreaSelectedMemberId}
+                    setTeamAreaExpanded={setTeamAreaExpanded}
+                    setTeamAreaActiveTab={setTeamAreaActiveTab}
+                    setTeamAreaActiveDetailTab={setTeamAreaActiveDetailTab}
+                    setTeamAreaSelectedMemberId={setTeamAreaSelectedMemberId}
+                  />
+                )}
               </div>
 
-              {/* 可拖拽分割线 */}
-              {isTeamAreaExpanded && (
-                <div
-                  className="shrink-0 w-1 cursor-col-resize bg-[var(--bg)] hover:bg-gray-400 active:bg-gray-500 transition-colors"
-                  onMouseDown={handleDividerMouseDown}
-                />
-              )}
-
-              {/* Tool Panel / Expanded Team Panel */}
-              {toolPanelHasContent && (
-                <ToolPanel
-                  sessionId={sessionId}
-                  teamAreaExpanded={teamAreaExpanded}
-                  teamAreaActiveTab={teamAreaActiveTab}
-                  teamAreaActiveDetailTab={teamAreaActiveDetailTab}
-                  teamAreaSelectedMemberId={teamAreaSelectedMemberId}
-                  setTeamAreaExpanded={setTeamAreaExpanded}
-                  setTeamAreaActiveTab={setTeamAreaActiveTab}
-                  setTeamAreaActiveDetailTab={setTeamAreaActiveDetailTab}
-                  setTeamAreaSelectedMemberId={setTeamAreaSelectedMemberId}
+              {/* Right Sidebar — workspace browser, editor, terminal */}
+              {rightSidebarOpen && (
+                <RightSidebar
+                  width={rightSidebarWidth}
+                  onResize={setRightSidebarWidth}
                 />
               )}
             </div>

@@ -9,9 +9,11 @@ SessionsPanel shows "Failed to load session files".
 from __future__ import annotations
 
 import asyncio
+import shlex
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Response
+from pydantic import BaseModel
 
 from agent_core import REPO_ROOT
 from agent_gateway.sessions import manager
@@ -154,3 +156,70 @@ async def file_api_rebuild_agent_data():
 @router.get("/ws-debug-config")
 async def file_api_ws_debug_config():
     return {"wsDisableCompress": False}
+
+
+# ---------------------------------------------------------------------------
+# Terminal command execution — used by the right-sidebar Terminal tab.
+# Runs a single command in the workspace root with a timeout.  This mirrors
+# the agent's own ``bash`` tool: same cwd, same process model.  The route is
+# behind the same middleware auth as every other /file-api/* endpoint.
+# ---------------------------------------------------------------------------
+
+class ExecRequest(BaseModel):
+    command: str
+    cwd: str = ""  # optional sub-directory under workspace, defaults to workspace root
+
+# Commands that must never run via this endpoint.
+_EXEC_DENY = (
+    "rm -rf /", "sudo ", "mkfs", "dd if=", ":(){", "fork bomb",
+    "shutdown", "reboot", "halt", "init 0",
+)
+
+# Max output size (bytes) — truncate beyond this to keep responses manageable.
+_MAX_OUTPUT = 512 * 1024
+
+
+@router.post("/exec")
+async def file_api_exec(req: ExecRequest):
+    cmd = req.command.strip()
+    if not cmd:
+        raise HTTPException(status_code=400, detail="empty_command")
+    for deny in _EXEC_DENY:
+        if deny in cmd:
+            raise HTTPException(status_code=403, detail="denied_command")
+
+    # Resolve cwd: default to the mounted workspace, optionally a sub-dir.
+    base = REPO_ROOT / "workspace"
+    if req.cwd:
+        candidate = (base / req.cwd).resolve()
+        try:
+            candidate.relative_to(base.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="cwd_escape")
+        base = candidate
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(base),
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return {"stdout": "", "stderr": "(command timed out after 30s)", "exit_code": -1}
+
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        if len(stdout_text) > _MAX_OUTPUT:
+            stdout_text = stdout_text[:_MAX_OUTPUT] + "\n... (truncated)"
+        if len(stderr_text) > _MAX_OUTPUT:
+            stderr_text = stderr_text[:_MAX_OUTPUT] + "\n... (truncated)"
+        return {"stdout": stdout_text, "stderr": stderr_text, "exit_code": proc.returncode}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

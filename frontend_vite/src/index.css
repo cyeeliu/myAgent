@@ -564,6 +564,7 @@ select {
   /* Content Area */
   .content {
     grid-area: content;
+    position: relative;
     padding: 16px 16px 16px 0;
     display: flex;
     flex-direction: column;

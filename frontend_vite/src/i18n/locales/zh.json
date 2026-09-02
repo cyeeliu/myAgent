@@ -1808,5 +1808,19 @@
   },
   "security": {
     "contentRetracted": "内容已因安全原因撤回"
+  },
+  "rightSidebar": {
+    "open": "打开侧边栏",
+    "close": "关闭侧边栏",
+    "tabFiles": "文件",
+    "tabEditor": "编辑器",
+    "tabTerminal": "终端",
+    "loading": "加载中...",
+    "error": "加载失败",
+    "emptyWorkspace": "工作区为空",
+    "noFileSelected": "请从文件列表中选择一个文件",
+    "terminalWelcome": "终端已就绪，输入命令并按 Enter 执行（Ctrl+L 清屏）",
+    "terminalPlaceholder": "输入命令...",
+    "terminalRunning": "正在执行..."
   }
 }
