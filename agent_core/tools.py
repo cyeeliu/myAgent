@@ -1000,7 +1000,14 @@ def run_send_to_leader(team_name: str, content: str) -> str:
 def run_check_inbox() -> str:
     msgs = consume_boss_inbox(route_protocol=True)
     if not msgs:
-        return "(inbox empty)"
+        # T-H7: inject_team_messages (called at the top of each loop
+        # iteration) already drains the boss inbox and injects messages
+        # as <team_messages> context. So check_inbox finding an empty
+        # inbox is the NORMAL case in A2A mode — the messages are already
+        # in the LLM context. Tell the agent to look at <team_messages>.
+        return ("(inbox empty — team messages were already injected as "
+                "<team_messages> at the start of this turn. "
+                "Process them from your context.)")
     # Team conversation messages are bridged to the frontend group chat by the
     # bus tap registered in start_team (teammates.py), which fires at BUS.send
     # time for every team message. Nothing to emit here.

@@ -103,15 +103,40 @@ def build_leader_prompt(
     tuples for the spawned members.
     """
     roster_lines = [f"  - {mn} [{dn}]" for mn, dn in member_roster]
+    member_names = [mn for mn, _ in member_roster]
     parts = [f"Team: {team_name}. You are the team LEADER '{leader_name}'."]
     if task:
         parts.append(f"Task: {task}")
     parts.append(
         "Coordinate your members via send_message / request_plan / review_plan / "
         "request_shutdown. When you have an overall plan, submit it via submit_plan "
-        "for the boss to approve (验收). Report final results to the boss via "
-        f"send_message(to=\"boss\", ...). Members: \n" + "\n".join(roster_lines))
+        "for the boss to approve (验收). Members: \n" + "\n".join(roster_lines))
     parts.append(build_coordination_instructions())
+    # ── CRITICAL: result aggregation workflow ──
+    # This is the fix for "leader doesn't summarize results to boss".
+    # The leader MUST collect all member results, synthesize a summary,
+    # and send it to the boss. Without this, the user never sees the
+    # team's work.
+    parts.append(
+        "RESULT AGGREGATION WORKFLOW (CRITICAL):\n"
+        "1. Dispatch tasks to members via send_message.\n"
+        "2. END YOUR TURN after dispatching. Member results arrive as "
+        "[result] or [member_done] messages in your inbox on later turns.\n"
+        "3. When ALL members have reported (you receive [member_done] from "
+        f"each of: {', '.join(member_names)}), synthesize a comprehensive "
+        "summary of the team's work.\n"
+        "4. Send the summary to the boss via "
+        "send_message(to=\"boss\", content=<your summary>). This is the "
+        "ONLY way the user sees the team's output — if you don't send it, "
+        "the user gets nothing.\n"
+        "5. After sending the summary, produce a final text response (no "
+        "tool_use) to end your turn. Do NOT continue working.\n"
+        "6. If a member reports an error or partial result, include it in "
+        "the summary — do NOT hide failures from the boss.\n"
+        "7. If a member hasn't reported after you've waited (idle timeout), "
+        "summarize whatever results you have and note which members are "
+        "still pending. Do NOT wait indefinitely."
+    )
     if persona:
         parts.append(f"Persona: {persona}")
     return "\n".join(parts)

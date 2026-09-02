@@ -261,9 +261,14 @@ def assemble_system_prompt(context: dict, tools: list | None = None,
                 "用户选择了集群模式。可用团队：" + avail + "。\n"
                 "请根据用户任务挑选最合适的一个团队，然后立即调用\n"
                 "  start_team(team_name=<你选的团队>, task=<用户的请求>)\n"
-                "启动团队。随后用 wait(sources=[\"team\",\"background\"], timeout=600)\n"
-                "配合 check_inbox 轮询 leader 的结果，必要时用 review_plan 审阅/批准\n"
-                "成员计划，最后把团队产出综合成最终答复。不要自己直接回答用户的问题。"
+                "启动团队。\n"
+                "A2A 事件驱动协调（不要使用 wait 工具等待团队）：\n"
+                "- 调用 start_team 后立即结束当前轮次（END YOUR TURN）。团队在后台线程异步工作。\n"
+                "- 当队友发送结果时，系统会自动用新轮次重新唤起你，结果出现在 <team_messages> 中。\n"
+                "- 每次被唤起后：处理消息，然后要么给 leader 发新指令并结束轮次，要么汇总最终结果给用户。\n"
+                "- 绝对不要调用 wait(sources=[\"team\",...]) — 它会阻塞轮次并冻结会话。\n"
+                "- 如需审阅成员计划，用 review_plan(request_id, approve, feedback)。\n"
+                "- 收到 [TEAM COMPLETE] 或 [TEAM TIMEOUT] 时，汇总已有结果给用户。"
             )
         else:
             name = str(team_mode)
@@ -271,9 +276,14 @@ def assemble_system_prompt(context: dict, tools: list | None = None,
                 "## 集群模式 (Cluster Mode)\n"
                 "用户选择了集群模式。请立即调用\n"
                 "  start_team(team_name=\"" + name + "\", task=<用户的请求>)\n"
-                "启动团队。随后用 wait(sources=[\"team\",\"background\"], timeout=600)\n"
-                "配合 check_inbox 轮询 leader 的结果，必要时用 review_plan 审阅/批准\n"
-                "成员计划，最后把团队产出综合成最终答复。不要自己直接回答用户的问题。"
+                "启动团队。\n"
+                "A2A 事件驱动协调（不要使用 wait 工具等待团队）：\n"
+                "- 调用 start_team 后立即结束当前轮次（END YOUR TURN）。团队在后台线程异步工作。\n"
+                "- 当队友发送结果时，系统会自动用新轮次重新唤起你，结果出现在 <team_messages> 中。\n"
+                "- 每次被唤起后：处理消息，然后要么给 leader 发新指令并结束轮次，要么汇总最终结果给用户。\n"
+                "- 绝对不要调用 wait(sources=[\"team\",...]) — 它会阻塞轮次并冻结会话。\n"
+                "- 如需审阅成员计划，用 review_plan(request_id, approve, feedback)。\n"
+                "- 收到 [TEAM COMPLETE] 或 [TEAM TIMEOUT] 时，汇总已有结果给用户。"
             )
     # ── 规划模式 (Plan Mode) directive ──
     # Set by the gateway (agent_compat.py CHAT_SEND) when the user picks

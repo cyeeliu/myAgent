@@ -170,7 +170,15 @@ def handle_inbox_message(
     boss_session: Any,
 ) -> bool:
     """Process one inbox message. Returns ``True`` if the teammate
-    should shut down, ``False`` otherwise."""
+    should shut down, ``False`` otherwise.
+
+    Handles protocol messages (shutdown_request, plan_approval_response)
+    explicitly. All other message types — including ``result`` and
+    ``plan_approval_request`` from members — are injected into the
+    teammate's context so they are visible to the LLM. Previously,
+    ``result`` and ``plan_approval_request`` were silently dropped
+    (T-M1, T-C1), causing the leader to never see member outputs.
+    """
     msg_type = msg.get("type", "message")
     meta = msg.get("metadata", {})
     req_id = meta.get("request_id", "")
@@ -191,6 +199,33 @@ def handle_inbox_message(
         messages.append({"role": "user",
             "content": "[Plan approved]" if approve
                        else f"[Plan rejected] {msg['content']}"})
+        return False
+    # ── Inject ALL other message types into context ──
+    # This includes:
+    #   - "message": regular p2p messages from other teammates/boss
+    #   - "result": member task results (previously dropped — T-M1)
+    #   - "plan_approval_request": member-submitted plans for review
+    #     (previously dropped — T-C1)
+    #   - "member_done": member completion notifications
+    # Format with type tag so the LLM can distinguish them.
+    sender = msg.get("from", "?")
+    content = msg.get("content", "")
+    if msg_type == "plan_approval_request":
+        # Include request_id so the leader can call review_plan(req_id, ...)
+        messages.append({"role": "user",
+            "content": f"[plan_approval_request from {sender}] "
+                       f"req:{req_id}\n{content}"})
+    elif msg_type == "result":
+        # Member result — this is the critical fix. The leader MUST see
+        # member results to synthesize a summary for the boss.
+        member_done = meta.get("member_done", False)
+        tag = "[member_done]" if member_done else "[result]"
+        messages.append({"role": "user",
+            "content": f"{tag} from {sender}: {content}"})
+    else:
+        # Generic message type — inject as-is.
+        messages.append({"role": "user",
+            "content": f"[{msg_type} from {sender}] {content}"})
     return False
 
 
@@ -341,6 +376,7 @@ def run_teammate_loop(
 
     messages = [{"role": "user", "content": prompt}]
     sent_reply = False
+    crashed = False  # T-H6: track crash state for exit notification
 
     effective_names = list(tool_names) if tool_names else list(MEMBER_TOOL_NAMES)
     sub_tools = teammate_tool_schemas(effective_names)
@@ -402,12 +438,9 @@ def run_teammate_loop(
                 if protocol_ctx["waiting_plan"]:
                     time.sleep(IDLE_POLL_INTERVAL)
                     continue
-                if inbox and not should_shutdown:
-                    non_protocol = [m for m in inbox
-                                    if m.get("type") == "message"]
-                    if non_protocol:
-                        messages.append({"role": "user",
-                            "content": "<inbox>" + json.dumps(non_protocol) + "</inbox>"})
+                # handle_inbox_message already injected all non-protocol
+                # messages (result, message, plan_approval_request) into
+                # the context. No separate non_protocol injection needed.
                 # Context management: use proper compaction pipeline instead of
                 # the old hard truncation. This preserves important context and
                 # prevents repetition caused by context loss.
@@ -445,10 +478,38 @@ def run_teammate_loop(
                             protocol_ctx["waiting_plan"] = (
                                 match.group(1) if match else output)
                         else:
+                            # T-H8: Permission check for teammate tools.
+                            # Teammates run in background threads and can't
+                            # ask the user, so "ask" → deny. But the
+                            # hardcoded safety backstop (deny-list bash,
+                            # path escape) always runs.
                             handler = sub_handlers.get(block.name)
                             try:
-                                output = call_tool_handler(handler, block.input,
-                                                           block.name)
+                                from agent_core.hooks import check_permission
+                                from agent_core.permissions import Permission
+                                _perm = Permission()
+                                _denied = check_permission(block, _perm)
+                                if _denied:
+                                    output = (f"Permission denied: {_denied} "
+                                              f"(teammates cannot request "
+                                              f"user approval)")
+                                    logger.warning("Teammate %s tool %s "
+                                                   "denied: %s", name,
+                                                   block.name, _denied)
+                                else:
+                                    output = call_tool_handler(
+                                        handler, block.input, block.name)
+                            except ImportError:
+                                # Fallback: no permission module — just run
+                                try:
+                                    output = call_tool_handler(
+                                        handler, block.input, block.name)
+                                except Exception as _he:
+                                    output = (f"Error: {block.name} raised "
+                                              f"{type(_he).__name__}: {_he}")
+                                    logger.error("teammate %s %s raised %s: %s",
+                                                 name, block.name,
+                                                 type(_he).__name__, _he)
                             except Exception as _he:
                                 output = (f"Error: {block.name} raised "
                                           f"{type(_he).__name__}: {_he}")
@@ -476,6 +537,7 @@ def run_teammate_loop(
                 break
     except Exception:
         logger.exception("Teammate %s crashed unexpectedly", name)
+        crashed = True
     finally:
         # ── Cleanup (guaranteed even on crash) ──
         try:
@@ -495,16 +557,27 @@ def run_teammate_loop(
             # a final "result" type message is needed for the A2A callback
             # to re-invoke the boss. Without this, the boss hangs forever
             # waiting for a completion signal that never arrives.
+            # T-H6: include crash status so the boss doesn't report success
+            # when the teammate actually crashed.
+            exit_meta = {"member_done": True, "member_name": name}
+            if crashed:
+                exit_meta["crashed"] = True
             if not sent_reply:
-                BUS.send(name, overseer, summary, "result")
+                if crashed:
+                    BUS.send(name, overseer,
+                             f"[CRASHED] {name} encountered an error. "
+                             f"Last output: {summary}",
+                             "result", exit_meta)
+                else:
+                    BUS.send(name, overseer, summary, "result")
             else:
                 # sent_reply=True means we sent intermediate messages, but
                 # we must still send a final "result" so the overseer knows
                 # we're done (not just waiting for the next message).
+                done_tag = "[crashed]" if crashed else "[member_done]"
                 BUS.send(name, overseer,
-                         f"[member_done] {name} finished.",
-                         "result",
-                         {"member_done": True, "member_name": name})
+                         f"{done_tag} {name} finished.",
+                         "result", exit_meta)
 
             # Only pop our own entry — a newer session may have evicted us.
             registry.unregister_teammate(name, cur_sd)

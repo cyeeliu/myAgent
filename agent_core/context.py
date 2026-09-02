@@ -103,31 +103,36 @@ def inject_team_messages(session: Session):
 
     if not msgs:
         return
-    # Only inject substantive messages (result/message types). Protocol messages
-    # (plan_approval_*, shutdown_*) are handled by check_inbox / the wait tool.
-    substantive = [m for m in msgs if m.get("type") in ("result", "message")]
-    if not substantive:
-        # Put non-substantive messages back — they'll be picked up by check_inbox.
-        # Actually consume_boss_inbox already drained the inbox, so we need to
-        # re-inject protocol messages into the inbox for check_inbox to find.
-        # But that's complex — simpler: just inject all messages as context.
-        # The model can distinguish protocol vs substantive by the [type] tag.
-        substantive = msgs
+    # Inject ALL messages — including protocol messages (plan_approval_request,
+    # shutdown_response, etc.) — so the boss LLM can see everything and act
+    # on request_ids. Previously, mixed protocol + result messages caused
+    # protocol messages to be silently dropped (T-H1), and request_id was
+    # never included in the formatted output (T-C2).
     lines = []
-    for m in substantive:
+    for m in msgs:
         mtype = m.get("type", "message")
         sender = m.get("from", "?")
         content = m.get("content", "")
+        meta = m.get("metadata", {})
+        req_id = meta.get("request_id", "")
         # Mark watchdog messages specially so the model knows the team
         # finished or timed out.
-        meta = m.get("metadata", {})
         if meta.get("watchdog"):
             if meta.get("timeout"):
                 lines.append(f"[TEAM TIMEOUT] {content}")
             else:
                 lines.append(f"[TEAM COMPLETE] {content}")
+        elif mtype == "plan_approval_request":
+            # Include request_id so the boss can call review_plan(req_id, ...)
+            lines.append(f"[plan_approval_request from {sender}] "
+                         f"req:{req_id} {content[:2000]}")
+        elif mtype == "result":
+            member_done = meta.get("member_done", False)
+            tag = "member_done" if member_done else "result"
+            lines.append(f"[{tag} from {sender}] {content[:2000]}")
         else:
-            lines.append(f"[team:{mtype} from {sender}] {content[:2000]}")
+            tag = f" req:{req_id}" if req_id else ""
+            lines.append(f"[team:{mtype} from {sender}]{tag} {content[:2000]}")
     if lines:
         session.append_context({"role": "user", "content": [
             {"type": "text", "text": "<team_messages>\n" + "\n".join(lines) +

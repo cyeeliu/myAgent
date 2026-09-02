@@ -111,12 +111,41 @@ class MessageBus:
                     pass
 
     def read_inbox(self, agent: str) -> list[dict]:
+        """Atomically read and clear the agent's inbox.
+
+        Uses os.rename to swap the mailbox file to a temp name before
+        reading, so messages appended by BUS.send (from another thread)
+        between read and delete are NOT lost (T-C3)."""
+        import os as _os
         inbox = _mailbox_dir() / f"{agent}.jsonl"
         if not inbox.exists():
             return []
-        msgs = [json.loads(line) for line in inbox.read_text().splitlines()
-                if line.strip()]
-        inbox.unlink()
+        # Atomic swap: rename to a unique temp file, then read the temp.
+        # Any BUS.send that arrives during the read will create a NEW
+        # {agent}.jsonl (since the original was renamed away), and its
+        # messages will be picked up on the next read_inbox call.
+        tmp = inbox.with_suffix(".jsonl.reading")
+        # Ensure unique temp name if a stale .reading file exists
+        i = 0
+        while tmp.exists():
+            i += 1
+            tmp = inbox.with_suffix(f".jsonl.reading{i}")
+        try:
+            _os.rename(str(inbox), str(tmp))
+        except FileNotFoundError:
+            # Another reader got there first
+            return []
+        try:
+            msgs = [json.loads(line) for line in tmp.read_text().splitlines()
+                    if line.strip()]
+        except Exception:
+            logger.exception("Failed to read swapped inbox %s", tmp)
+            msgs = []
+        finally:
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
         return msgs
 
     def has_inbox(self, agent: str) -> bool:
