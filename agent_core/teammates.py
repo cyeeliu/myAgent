@@ -16,11 +16,22 @@ Public API is preserved for ``code.py`` facade, ``tools.py``, and
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+
+# T-H2: Cap concurrent teammate threads to prevent unbounded thread
+# proliferation.  Each teammate runs a full agent_loop with its own
+# message history and LLM connection; without a cap a single session
+# could spawn dozens, exhausting file descriptors / memory / API rate
+# limits.  The limit is configurable via MAX_TEAMMATES env var.
+_MAX_TEAMMATES = int(os.environ.get("MAX_TEAMMATES", "8"))
+_teammate_semaphore = threading.BoundedSemaphore(_MAX_TEAMMATES)
+_active_teammate_threads: dict[str, threading.Thread] = {}
+_threads_lock = threading.Lock()
 
 from agent_core.bus import BUS
 from agent_core.env import session_dir, set_session_dir
@@ -135,6 +146,17 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
     if not registry.register_teammate(name, cur_sd):
         return f"Teammate '{name}' already exists"
 
+    # T-H2: enforce concurrency cap.  acquire(blocking=False) returns
+    # False immediately when the semaphore is exhausted so the caller
+    # gets a clear error instead of silently queuing or OOM-ing.
+    if not _teammate_semaphore.acquire(blocking=False):
+        registry.unregister_teammate(name)
+        active = sum(1 for t in _active_teammate_threads.values()
+                     if t.is_alive())
+        return (f"Cannot spawn teammate '{name}': {active}/{_MAX_TEAMMATES} "
+                f"teammate threads already active (set MAX_TEAMMATES to raise "
+                f"the limit).")
+
     system = build_teammate_system_prompt(
         name, role,
         display_name=display_name or "",
@@ -143,28 +165,43 @@ def spawn_teammate_thread(name: str, role: str, prompt: str, *,
     )
 
     def run():
-        run_teammate_loop(
-            name=name,
-            role=role,
-            prompt=prompt,
-            display_name=display_name,
-            persona=persona,
-            worktree=worktree,
-            overseer=overseer,
-            boss_session=boss_session,
-            team_name=team_name,
-            member_mode=member_mode,
-            member_model=model,
-            system=system,
-            captured_session_dir=captured_session_dir,
-            cur_sd=cur_sd,
-            tool_names=tool_names,
-            agent_key=agent_key,
-            on_exit=on_exit,
-        )
+        try:
+            run_teammate_loop(
+                name=name,
+                role=role,
+                prompt=prompt,
+                display_name=display_name,
+                persona=persona,
+                worktree=worktree,
+                overseer=overseer,
+                boss_session=boss_session,
+                team_name=team_name,
+                member_mode=member_mode,
+                member_model=model,
+                system=system,
+                captured_session_dir=captured_session_dir,
+                cur_sd=cur_sd,
+                tool_names=tool_names,
+                agent_key=agent_key,
+                on_exit=on_exit,
+            )
+        finally:
+            _teammate_semaphore.release()
+            with _threads_lock:
+                _active_teammate_threads.pop(name, None)
 
-    threading.Thread(target=run, daemon=True).start()
+    t = threading.Thread(target=run, daemon=True, name=f"teammate-{name}")
+    with _threads_lock:
+        _active_teammate_threads[name] = t
+    t.start()
     return f"Teammate '{name}' spawned as {role}"
+
+
+def active_teammate_thread_count() -> int:
+    """T-H2: return the number of currently alive teammate threads."""
+    with _threads_lock:
+        return sum(1 for t in _active_teammate_threads.values()
+                   if t.is_alive())
 
 
 # ── Team info ──

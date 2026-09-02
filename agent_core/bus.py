@@ -1,9 +1,14 @@
 """agent_core.bus — extracted from code.py (s20 comprehensive agent)."""
 from dataclasses import dataclass, asdict, field
 import json
+import logging
+import os
 import random
 import time
+from pathlib import Path
 from agent_core.env import session_dir, terminal_print
+
+logger = logging.getLogger(__name__)
 
 
 def _mailbox_dir():
@@ -78,6 +83,12 @@ class MessageBus:
             f.write(json.dumps(msg) + "\n")
         terminal_print(f"  \033[33m[bus] {from_agent} → {to_agent}: "
                        f"({msg_type}) {content[:50]}\033[0m")
+        # T-M4: write a cross-process poke file so a boss running in a
+        # different gateway replica can detect the new message without
+        # waiting for the next poll timeout.  The poke file is a tiny
+        # JSON line under .mailboxes/.pokes/; check_cross_process_pokes()
+        # consumes it and fires the local in-process callbacks.
+        _write_poke(mdir, from_agent, to_agent, content, msg_type, metadata)
         # Poke a waiting boss so its `wait` tool resumes instantly. The mailbox
         # line is already written, so even if there's no listener the next
         # check_inbox will find it — this is just a latency optimization + a
@@ -163,6 +174,88 @@ class MessageBus:
         except Exception:
             return False
 
+def _poke_dir(mdir: Path) -> Path:
+    """Directory for cross-process poke files."""
+    d = mdir / ".pokes"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _write_poke(mdir: Path, from_agent: str, to_agent: str,
+                content: str, msg_type: str, metadata: dict) -> None:
+    """T-M4: write a cross-process poke file so a boss in a different
+    process can detect the new message immediately via
+    check_cross_process_pokes() instead of waiting for the next poll."""
+    try:
+        d = _poke_dir(mdir)
+        poke = {
+            "from": from_agent, "to": to_agent,
+            "type": msg_type, "ts": time.time(),
+            "content": content[:200],  # truncate for poke file
+        }
+        fname = f"poke_{int(time.time() * 1000)}_{random.randint(0, 999999)}.json"
+        (d / fname).write_text(json.dumps(poke))
+    except Exception:
+        pass  # best-effort; mailbox line is already written
+
+
+def check_cross_process_pokes(session_path) -> int:
+    """T-M4: consume cross-process poke files and fire local callbacks.
+
+    Called from the boss's idle poll / check_inbox path.  Reads poke
+    files written by other processes, fires the local ``_boss_listeners``
+    / ``_bus_taps`` / ``_team_callbacks`` for each, then deletes them.
+    Returns the number of pokes consumed.
+    """
+    sp = Path(str(session_path))
+    mdir = sp / ".mailboxes"
+    pdir = mdir / ".pokes"
+    if not pdir.exists():
+        return 0
+    consumed = 0
+    key = str(sp)
+    for pf in sorted(pdir.glob("poke_*.json")):
+        try:
+            poke = json.loads(pf.read_text())
+            to_agent = poke.get("to", "")
+            from_agent = poke.get("from", "")
+            content = poke.get("content", "")
+            msg_type = poke.get("type", "")
+            # Fire boss listener (immediate wakeup)
+            if to_agent == "boss":
+                cb = _boss_listeners.get(key)
+                if cb is not None:
+                    try:
+                        cb(content, msg_type)
+                    except Exception:
+                        pass
+            # Fire bus tap (frontend bridge)
+            tap = _bus_taps.get(key)
+            if tap is not None:
+                try:
+                    tap(from_agent, to_agent, content, msg_type, {})
+                except Exception:
+                    pass
+            # Fire team callback (A2A re-invoke)
+            if to_agent == "boss" and msg_type in (
+                    "result", "message", "plan_approval_request"):
+                tcb = _team_callbacks.get(key)
+                if tcb is not None:
+                    try:
+                        tcb(from_agent, content, msg_type, {})
+                    except Exception:
+                        pass
+            consumed += 1
+        except Exception:
+            pass
+        finally:
+            try:
+                pf.unlink()
+            except Exception:
+                pass
+    return consumed
+
+
 BUS = MessageBus()
 
 @dataclass
@@ -199,6 +292,15 @@ def match_response(response_type: str, request_id: str, approve: bool):
     pending_requests.pop(request_id, None)
 
 def consume_boss_inbox(route_protocol=True) -> list[dict]:
+    # T-M4: consume cross-process poke files first, firing local
+    # callbacks (_boss_listeners / _bus_taps / _team_callbacks) for
+    # messages sent by teammates in other gateway replicas.  This gives
+    # immediate wakeup / A2A re-invoke / frontend bridge without waiting
+    # for the next poll timeout.
+    try:
+        check_cross_process_pokes(session_dir())
+    except Exception:
+        pass
     msgs = BUS.read_inbox("boss")
     if route_protocol:
         for msg in msgs:

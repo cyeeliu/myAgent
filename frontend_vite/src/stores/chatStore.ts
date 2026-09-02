@@ -20,9 +20,18 @@ import {
 } from '../types';
 import { useTodoStore } from './todoStore';
 
-// F-L5/F-M5: 120s is a sane timeout — the old 12_000_000ms (~3.3h) meant stale
-// tool executions spun forever after a reconnect that lost the tool_result event.
-const TOOL_TIMEOUT_MS = 120_000;
+// F-L5/F-M5: Tool timeout is configurable via VITE_TOOL_TIMEOUT_MS env var.
+// Default 300s (5 min) — long enough for builds/large searches, short enough
+// that stale tool executions don't spin forever after a reconnect that lost
+// the tool_result event. The old 12_000_000ms (~3.3h) was far too long.
+const TOOL_TIMEOUT_MS = (() => {
+  const envVal = import.meta.env.VITE_TOOL_TIMEOUT_MS;
+  if (typeof envVal === 'string' && envVal) {
+    const parsed = parseInt(envVal, 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return 300_000; // 5 minutes default
+})();
 const EVOLUTION_STATUS_END_VISIBLE_MS = 3_000;
 let evolutionStatusClearTimer: ReturnType<typeof setTimeout> | null = null;
 

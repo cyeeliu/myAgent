@@ -89,19 +89,30 @@ def inject_team_messages(session: Session):
     from agent_core.bus import consume_boss_inbox
     msgs = consume_boss_inbox(route_protocol=True)
 
-    # Stale team detection: check if any teams have all-exited but the
-    # boss might not have received the watchdog notification (e.g., A2A
-    # callback wasn't registered, session was evicted and rehydrated).
+    # T-L2: Stale team detection — if a team was started (bus tap
+    # registered for this session) but all teammates have exited and
+    # no messages were received, synthesize a [TEAM STALE] notification
+    # so the boss doesn't hang forever waiting for a team that already
+    # finished (e.g., A2A callback wasn't registered, session was
+    # evicted and rehydrated, watchdog missed the exit).
     try:
         from agent_core.team_state import registry
-        active = set(registry.active_names())
-        # If there are bus tap registrations but no active teammates,
-        # the team finished but the boss might not know. The watchdog
-        # should handle this, but as a backstop we check here too.
-        # We only synthesize if there are truly no messages and no active
-        # teammates — the watchdog's BUS.send will have written to the
-        # inbox, so consume_boss_inbox above will have picked it up.
-        # This is a no-op if the watchdog already notified.
+        from agent_core.bus import _bus_taps
+        from agent_core.env import session_dir
+        cur_sd = str(session_dir())
+        active = registry.active_names_for_session(cur_sd)
+        has_team = cur_sd in _bus_taps or any(
+            str(k) == cur_sd for k in _bus_taps)
+        if has_team and not active and not msgs:
+            msgs = [{
+                "from": "watchdog",
+                "to": "boss",
+                "content": "All teammates have exited but no final "
+                           "result was received. The team may have "
+                           "completed — check task status.",
+                "type": "result",
+                "metadata": {"watchdog": True, "stale": True},
+            }]
     except Exception:
         pass
 

@@ -78,17 +78,24 @@ def run_bash(command: str, cwd: Path = None,
     # commands, which get a 120s cap. Long-running work must use run_in_background.
     from agent_core import sandbox
     base = Path(cwd) if cwd else workdir()
+    # T-M6: when cwd is explicitly set (teammate worktree context) and
+    # the sandbox is not available, bash can escape via absolute paths
+    # or `cd /`.  We cannot fully prevent this without bwrap, but we
+    # (1) force the sandbox on when bwrap IS available even if enabled()
+    # would auto-disable for this path, and (2) prepend a warning so the
+    # agent and operator know the command is not filesystem-confined.
+    worktree_confined = cwd is not None
+    sandbox_active = False
     try:
-        if sandbox.enabled(base):
+        if sandbox.enabled(base) or (worktree_confined and sandbox.bwrap_available()):
             # bwrap fails closed: a namespace/cap error makes bwrap exit
             # non-zero with a stderr message rather than running unsandboxed.
             r = subprocess.run(sandbox.build_argv(base, command),
                                capture_output=True, text=True, timeout=120)
+            sandbox_active = True
         else:
             r = subprocess.run(command, shell=True, cwd=base,
                                capture_output=True, text=True, timeout=120)
-        out = (r.stdout + r.stderr).strip()
-        return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
         return ("Error: Timeout (120s). The command ran longer than 120s. "
                 "Re-run with run_in_background=true to let it continue detached, "
@@ -96,6 +103,13 @@ def run_bash(command: str, cwd: Path = None,
     except FileNotFoundError as e:
         # bwrap on PATH at enabled()-check time but gone at run time.
         return f"Error: sandbox binary not found: {e}"
+    out = (r.stdout + r.stderr).strip()
+    # T-M6: warn when bash ran unsandboxed in a worktree context.
+    if worktree_confined and not sandbox_active:
+        out = (f"[WARNING: bash not sandboxed — command may access files "
+               f"outside {base}. Install bubblewrap (bwrap) for full "
+               f"filesystem confinement.]\n" + out)
+    return out[:50000] if out else "(no output)"
 
 
 def run_task_output(task_id: str, timeout: int = 0) -> str:

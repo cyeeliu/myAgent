@@ -1,0 +1,78 @@
+"""evals.storage.results — persist evaluation results (JSON files + optional Postgres)."""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+
+class ResultStore:
+    """Persist evaluation reports to JSON files, optionally to Postgres."""
+
+    def __init__(self, base_dir: str = "evals/results"):
+        self.base_dir = Path(base_dir)
+
+    def save(self, report: dict) -> Path:
+        """Save report to JSON file. Returns the directory path."""
+        run_id = report.get("run_id", "unknown")
+        out_dir = self.base_dir / run_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save full report
+        (out_dir / "report.json").write_text(
+            json.dumps(report, indent=2, default=str)
+        )
+
+        # Save summary
+        from evals.report.render import render_summary
+        (out_dir / "summary.txt").write_text(render_summary(report))
+
+        # Optional Postgres
+        self._try_save_postgres(report)
+
+        return out_dir
+
+    def load(self, run_id: str) -> dict | None:
+        """Load a report from JSON file."""
+        path = self.base_dir / run_id / "report.json"
+        if path.exists():
+            return json.loads(path.read_text())
+        return self._try_load_postgres(run_id)
+
+    def list_runs(self) -> list[str]:
+        """List all run IDs."""
+        if not self.base_dir.exists():
+            return []
+        return sorted(
+            d.name for d in self.base_dir.iterdir()
+            if d.is_dir() and (d / "report.json").exists()
+        )
+
+    def _try_save_postgres(self, report: dict) -> None:
+        """Save to Postgres if DATABASE_URL is set."""
+        if not os.environ.get("DATABASE_URL"):
+            return
+        try:
+            from agent_gateway import db
+            # Tables would be created here if they don't exist
+            # This is optional and best-effort
+            db.execute("""
+                INSERT INTO eval_runs (run_id, dataset, model, scorecard)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (run_id) DO UPDATE SET scorecard = EXCLUDED.scorecard
+            """, (report.get("run_id"), report.get("dataset"),
+                  report.get("model"), json.dumps(report.get("scorecard", {}))))
+        except Exception:
+            pass  # Postgres optional
+
+    def _try_load_postgres(self, run_id: str) -> dict | None:
+        """Load from Postgres if available."""
+        if not os.environ.get("DATABASE_URL"):
+            return None
+        try:
+            from agent_gateway import db
+            row = db.query_one("SELECT * FROM eval_runs WHERE run_id = %s", (run_id,))
+            return row
+        except Exception:
+            return None

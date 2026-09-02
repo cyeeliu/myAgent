@@ -48,15 +48,25 @@ class TeammateEventShim:
     """Events shim for teammate ``chat_create``.
 
     Exposes ``interrupted`` (proxied from the boss session so the
-    adapter's mid-stream check breaks when the user hits Stop) and
-    swallows ``emit()`` so teammate tokens don't stream into the main
-    chat.
+    adapter's mid-stream check breaks when the user hits Stop).
+
+    T-M5: ``emit()`` forwards meaningful events (tool_start, tool_result,
+    done, error) to the boss session as ``team_event`` events so the
+    frontend can see teammate activity in real time.  Token / text /
+    tool_start_delta events are still swallowed to avoid flooding the
+    main chat with per-token deltas.
     """
 
-    __slots__ = ("_boss",)
+    # Event kinds that are forwarded to the boss session.
+    _FORWARD_KINDS = frozenset({
+        "tool_start", "tool_result", "done", "error",
+    })
 
-    def __init__(self, boss: Any) -> None:
+    __slots__ = ("_boss", "_name")
+
+    def __init__(self, boss: Any, name: str = "") -> None:
         self._boss = boss
+        self._name = name
 
     @property
     def interrupted(self) -> bool:
@@ -65,5 +75,29 @@ class TeammateEventShim:
     def streaming(self) -> bool:  # adapter may read this; not required
         return False
 
-    def emit(self, *args: Any, **kwargs: Any) -> None:
-        pass
+    def emit(self, kind: str = "", *args: Any, **kwargs: Any) -> None:
+        # Forward meaningful events to the boss session as team_event
+        # so the frontend TeamArea shows teammate tool calls / results /
+        # completion / errors in real time.
+        if kind not in self._FORWARD_KINDS or self._boss is None:
+            return
+        try:
+            # T-M5 bug-2 fix: adapter calls emit(kind, payload_dict)
+            # positionally, so payload is in args[0], not kwargs.
+            if args and isinstance(args[0], dict):
+                payload = args[0]
+            elif args and isinstance(args[0], str):
+                payload = {"text": args[0]}
+            else:
+                payload = kwargs.get("payload") or kwargs or {}
+            if isinstance(payload, dict):
+                payload = {**payload, "teammate": self._name}
+            self._boss.emit("team_event", {
+                "event": {
+                    "type": f"teammate.{kind}",
+                    "teammate": self._name,
+                    "payload": payload,
+                },
+            })
+        except Exception:
+            pass

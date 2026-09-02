@@ -215,6 +215,12 @@
   margin-top: 2px;
 }
 
+.terminal__line--info {
+  color: #569cd6;
+  font-size: 11px;
+  font-style: italic;
+}
+
 .terminal__input-row {
   display: flex;
   align-items: center;

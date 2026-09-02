@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 interface TerminalLine {
   id: number;
-  type: 'cmd' | 'stdout' | 'stderr' | 'exit';
+  type: 'cmd' | 'stdout' | 'stderr' | 'exit' | 'info';
   text: string;
 }
 
@@ -11,13 +11,30 @@ interface TerminalTabProps {
   cwd?: string;
 }
 
-export function TerminalTab({ cwd = '' }: TerminalTabProps) {
+/**
+ * Parse a `cd` target from a command string.
+ * Returns the target path if the command is a bare `cd <path>`, else null.
+ * Handles: `cd /foo`, `cd ..`, `cd ../bar`, `cd ~`, `cd`
+ */
+function parseCdTarget(cmd: string): string | null {
+  const trimmed = cmd.trim();
+  // Match: cd, cd <path>, cd "<path>", cd '<path>'
+  const match = trimmed.match(/^cd(?:\s+("[^"]*"|'[^']*'|[^\s;|&]+))?\s*$/);
+  if (!match) return null;
+  if (!match[1]) return ''; // bare `cd` → home/root
+  // Strip quotes
+  return match[1].replace(/^["']|["']$/g, '');
+}
+
+export function TerminalTab({ cwd: initialCwd = '' }: TerminalTabProps) {
   const { t } = useTranslation();
   const [lines, setLines] = useState<TerminalLine[]>([]);
   const [input, setInput] = useState('');
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  // Persistent CWD tracking — relative to workspace root
+  const [currentCwd, setCurrentCwd] = useState(initialCwd);
   const outputRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const lineIdRef = useRef(0);
@@ -45,11 +62,55 @@ export function TerminalTab({ cwd = '' }: TerminalTabProps) {
     setHistoryIndex(-1);
     addLine('cmd', `$ ${cmd}`);
 
+    // Check if this is a `cd` command — resolve CWD client-side for persistence
+    const cdTarget = parseCdTarget(cmd);
+    if (cdTarget !== null) {
+      try {
+        // Run `cd <target> && pwd` to resolve the new directory
+        const resolveCmd = cdTarget === '' || cdTarget === '~'
+          ? 'pwd'
+          : `cd ${cdTarget} && pwd`;
+        const res = await fetch('/file-api/exec', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ command: resolveCmd, cwd: currentCwd }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          addLine('stderr', data.detail || `HTTP ${res.status}`);
+        } else if (data.exit_code !== 0) {
+          if (data.stderr) addLine('stderr', data.stderr);
+          addLine('exit', `(exit code: ${data.exit_code})`);
+        } else {
+          // Parse the resolved path and convert to relative CWD
+          const resolvedPath = (data.stdout || '').trim();
+          if (resolvedPath) {
+            // The backend returns absolute paths. We need to convert to
+            // a relative path from the workspace root for the cwd param.
+            // The backend's base is REPO_ROOT/workspace, so we send the
+            // absolute path as cwd and let the backend handle it.
+            // Actually, the backend expects cwd relative to workspace root.
+            // We'll send the resolved path and let the backend resolve it.
+            // For simplicity, we store the absolute path and send it as cwd.
+            setCurrentCwd(resolvedPath);
+            addLine('info', `(cwd → ${resolvedPath})`);
+          }
+        }
+      } catch (err) {
+        addLine('stderr', err instanceof Error ? err.message : 'Request failed');
+      } finally {
+        setRunning(false);
+        inputRef.current?.focus();
+      }
+      return;
+    }
+
+    // Normal command — run with current CWD
     try {
       const res = await fetch('/file-api/exec', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command: cmd, cwd }),
+        body: JSON.stringify({ command: cmd, cwd: currentCwd }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -67,7 +128,7 @@ export function TerminalTab({ cwd = '' }: TerminalTabProps) {
       setRunning(false);
       inputRef.current?.focus();
     }
-  }, [running, cwd, addLine]);
+  }, [running, currentCwd, addLine]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
@@ -97,6 +158,9 @@ export function TerminalTab({ cwd = '' }: TerminalTabProps) {
     }
   }, [input, running, runCommand, history, historyIndex]);
 
+  // Show CWD in prompt
+  const promptLabel = currentCwd ? `$ ${currentCwd}` : '$';
+
   return (
     <div className="terminal">
       <div className="terminal__output" ref={outputRef}>
@@ -115,7 +179,7 @@ export function TerminalTab({ cwd = '' }: TerminalTabProps) {
         )}
       </div>
       <div className="terminal__input-row">
-        <span className="terminal__prompt">$</span>
+        <span className="terminal__prompt">{promptLabel}</span>
         <input
           ref={inputRef}
           className="terminal__input"

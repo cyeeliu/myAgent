@@ -421,7 +421,8 @@
     "language": "Language",
     "appearance": "Appearance",
     "searchSessions": "Search sessions...",
-    "noSessionsFound": "No sessions found"
+    "noSessionsFound": "No sessions found",
+    "showMore": "Show more ({{count}} remaining)"
   },
   "heartbeat": {
     "title": "Heartbeat Management",

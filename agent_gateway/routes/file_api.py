@@ -170,10 +170,70 @@ class ExecRequest(BaseModel):
     cwd: str = ""  # optional sub-directory under workspace, defaults to workspace root
 
 # Commands that must never run via this endpoint.
-_EXEC_DENY = (
-    "rm -rf /", "sudo ", "mkfs", "dd if=", ":(){", "fork bomb",
-    "shutdown", "reboot", "halt", "init 0",
+# Checked via both substring match (for shell metacharacters) and
+# shlex parsing (for command-level deny).
+_EXEC_DENY_SUBSTR = (
+    ":(){", "fork bomb", "shutdown", "reboot", "halt", "init 0",
+    "mkfs", "dd if=/dev/", "> /dev/sd",
 )
+
+# Denied base commands (first token after shlex split, or after &&/||/; chains).
+_EXEC_DENY_CMDS = {
+    "sudo", "su", "chmod", "chown", "mount", "umount",
+    "shutdown", "reboot", "halt", "poweroff",
+    "mkfs", "fdisk", "parted",
+}
+
+# Denied rm patterns: rm -rf /, rm -rf /*, rm -rf ~, etc.
+_EXEC_DENY_RM_ROOTS = ("/", "/*", "~", "~/*", "/boot", "/etc", "/usr", "/var", "/proc", "/sys")
+
+
+def _is_dangerous_command(cmd: str) -> bool:
+    """Check if a command is dangerous using both substring and parsed checks."""
+    # Substring checks for shell metacharacter patterns
+    for deny in _EXEC_DENY_SUBSTR:
+        if deny in cmd:
+            return True
+
+    # Split on shell operators to check each sub-command
+    import re
+    sub_cmds = re.split(r'\s*(?:&&|\|\||;|\|)\s*', cmd)
+    for sub_cmd in sub_cmds:
+        sub_cmd = sub_cmd.strip()
+        if not sub_cmd:
+            continue
+        try:
+            tokens = shlex.split(sub_cmd)
+        except ValueError:
+            # Malformed shell — be conservative and deny
+            return True
+        if not tokens:
+            continue
+        base = tokens[0]
+        # Strip path prefix: /usr/bin/sudo → sudo
+        base_name = base.rsplit("/", 1)[-1]
+
+        # Check denied commands
+        if base_name in _EXEC_DENY_CMDS:
+            return True
+
+        # Check rm -rf with dangerous targets
+        if base_name == "rm" and "-rf" in " ".join(tokens[1:]):
+            for arg in tokens[1:]:
+                if arg.startswith("-"):
+                    continue  # skip flags
+                # Deny exact dangerous root paths
+                if arg in _EXEC_DENY_RM_ROOTS:
+                    return True
+                # Deny absolute paths outside /tmp (conservative for web terminal)
+                if arg.startswith("/") and not arg.startswith("/tmp/"):
+                    return True
+                # Deny home directory deletion
+                if arg.startswith("~"):
+                    return True
+
+    return False
+
 
 # Max output size (bytes) — truncate beyond this to keep responses manageable.
 _MAX_OUTPUT = 512 * 1024
@@ -184,19 +244,27 @@ async def file_api_exec(req: ExecRequest):
     cmd = req.command.strip()
     if not cmd:
         raise HTTPException(status_code=400, detail="empty_command")
-    for deny in _EXEC_DENY:
-        if deny in cmd:
-            raise HTTPException(status_code=403, detail="denied_command")
+    if _is_dangerous_command(cmd):
+        raise HTTPException(status_code=403, detail="denied_command")
 
     # Resolve cwd: default to the mounted workspace, optionally a sub-dir.
-    base = REPO_ROOT / "workspace"
+    # Accepts both relative paths (joined to workspace root) and absolute
+    # paths (must be within the workspace root, verified by relative_to).
+    import pathlib as _pathlib
+    ws_root = (REPO_ROOT / "workspace").resolve()
     if req.cwd:
-        candidate = (base / req.cwd).resolve()
+        cwd_path = _pathlib.Path(req.cwd)
+        if cwd_path.is_absolute():
+            candidate = cwd_path.resolve()
+        else:
+            candidate = (ws_root / req.cwd).resolve()
         try:
-            candidate.relative_to(base.resolve())
+            candidate.relative_to(ws_root)
         except ValueError:
             raise HTTPException(status_code=403, detail="cwd_escape")
         base = candidate
+    else:
+        base = ws_root
 
     try:
         proc = await asyncio.create_subprocess_shell(

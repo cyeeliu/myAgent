@@ -1,0 +1,31 @@
+{
+  "name": "mock-test",
+  "tasks": [
+    {
+      "id": "mock-001",
+      "category": "tool_success",
+      "difficulty": "easy",
+      "prompt": "Search for 'def' in Python files",
+      "workspace": "fixtures/repo_sample",
+      "mode": "mock",
+      "max_turns": 3,
+      "max_seconds": 30,
+      "repeat": 1,
+      "permission": "allow_all",
+      "expected_tools": ["grep"],
+      "script": [
+        {"content": [{"type": "tool_use", "id": "t1", "name": "grep", "input": {"pattern": "def", "path": "src/"}}]},
+        {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "src/main.py:1:def foo()\nsrc/utils.py:1:def greet()"}]},
+        {"content": [{"type": "text", "text": "Found 2 function definitions: foo() and greet()"}]}
+      ],
+      "judge": {
+        "type": "composite",
+        "components": [
+          {"type": "rule", "rules": [{"kind": "tool_used", "tool": "grep"}], "weight": 0.5},
+          {"type": "rule", "rules": [{"kind": "no_error"}], "weight": 0.5}
+        ]
+      },
+      "tags": ["mock", "tool_success"]
+    }
+  ]
+}

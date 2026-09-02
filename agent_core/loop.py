@@ -378,6 +378,11 @@ def cron_autorun_loop(session: Session):
         fired = consume_cron_queue()
         if not fired:
             continue
+        # T-M3: only hold session.lock for the quick mutations
+        # (append_both + context update).  agent_loop contains LLM
+        # calls and tool execution that can take tens of seconds;
+        # holding the lock during it blocks post_message / interrupt
+        # / any other session operation for the entire cron turn.
         with session.lock:
             turn_start = len(session.record)
             for job in fired:
@@ -386,7 +391,11 @@ def cron_autorun_loop(session: Session):
                 if session.transport == "cli":
                     terminal_print(
                         f"  \033[35m[cron auto] {job.prompt[:60]}\033[0m")
-            agent_loop(session)
+        # agent_loop runs lock-free — it acquires session.lock
+        # internally only for the brief append_both / context mutations
+        # it needs, so other operations can proceed during LLM calls.
+        agent_loop(session)
+        with session.lock:
             session.context.update(update_context(session.context, session.record))
-            if session.transport == "cli":
-                print_turn_assistants(session.record, turn_start)
+        if session.transport == "cli":
+            print_turn_assistants(session.record, turn_start)

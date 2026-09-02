@@ -1,0 +1,89 @@
+{
+  "name": "tool-success-v1",
+  "tasks": [
+    {
+      "id": "tool-success-bash-basic-001",
+      "category": "tool_success",
+      "difficulty": "easy",
+      "prompt": "Run 'echo hello' and tell me the output",
+      "workspace": "fixtures/repo_sample",
+      "mode": "online",
+      "max_turns": 5,
+      "max_seconds": 60,
+      "repeat": 1,
+      "permission": "allow_all",
+      "expected_tools": ["bash"],
+      "judge": {
+        "type": "composite",
+        "components": [
+          {"type": "rule", "rules": [{"kind": "tool_used", "tool": "bash"}], "weight": 0.5},
+          {"type": "rule", "rules": [{"kind": "regex_in_output", "pattern": "hello"}], "weight": 0.5}
+        ]
+      },
+      "tags": ["tool_success", "bash"]
+    },
+    {
+      "id": "tool-success-read-file-001",
+      "category": "tool_success",
+      "difficulty": "easy",
+      "prompt": "Read the file README.md and summarize it",
+      "workspace": "fixtures/repo_sample",
+      "mode": "online",
+      "max_turns": 5,
+      "max_seconds": 60,
+      "repeat": 1,
+      "permission": "allow_all",
+      "expected_tools": ["read_file"],
+      "judge": {
+        "type": "rule",
+        "rules": [
+          {"kind": "tool_used", "tool": "read_file"},
+          {"kind": "no_error"}
+        ]
+      },
+      "tags": ["tool_success", "read_file"]
+    },
+    {
+      "id": "tool-success-grep-001",
+      "category": "tool_success",
+      "difficulty": "easy",
+      "prompt": "Search for 'def' in all Python files under src/",
+      "workspace": "fixtures/repo_sample",
+      "mode": "online",
+      "max_turns": 5,
+      "max_seconds": 60,
+      "repeat": 1,
+      "permission": "allow_all",
+      "expected_tools": ["grep"],
+      "judge": {
+        "type": "rule",
+        "rules": [
+          {"kind": "tool_used", "tool": "grep"},
+          {"kind": "no_error"}
+        ]
+      },
+      "tags": ["tool_success", "grep"]
+    },
+    {
+      "id": "tool-success-bash-timeout-001",
+      "category": "tool_success",
+      "difficulty": "medium",
+      "prompt": "Run a command that will timeout: sleep 200",
+      "workspace": "fixtures/repo_sample",
+      "mode": "online",
+      "max_turns": 5,
+      "max_seconds": 30,
+      "repeat": 1,
+      "permission": "allow_all",
+      "expected_tools": ["bash"],
+      "judge": {
+        "type": "rule",
+        "rules": [
+          {"kind": "tool_used", "tool": "bash"},
+          {"kind": "regex_in_output", "pattern": "timeout|background|task"}
+        ]
+      },
+      "tags": ["tool_success", "bash", "timeout"]
+    }
+  ]
+}

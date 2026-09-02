@@ -1,0 +1,50 @@
+{
+  "name": "tool-selection-v1",
+  "tasks": [
+    {
+      "id": "tool-sel-grep-001",
+      "category": "tool_selection",
+      "difficulty": "easy",
+      "prompt": "Find all function definitions named 'foo' in this codebase",
+      "workspace": "fixtures/repo_sample",
+      "mode": "online",
+      "max_turns": 6,
+      "max_seconds": 60,
+      "repeat": 1,
+      "permission": "allow_all",
+      "expected_tools": ["grep"],
+      "forbidden_tools": [],
+      "judge": {
+        "type": "composite",
+        "components": [
+          {"type": "trajectory", "expected_sequence": ["grep"], "weight": 0.6},
+          {"type": "rule", "rules": [{"kind": "no_error"}], "weight": 0.4}
+        ]
+      },
+      "tags": ["tool_selection", "grep"]
+    },
+    {
+      "id": "tool-sel-grep-vs-read-001",
+      "category": "tool_selection",
+      "difficulty": "medium",
+      "prompt": "Count the total number of 'def' statements in all .py files. Do NOT read files one by one.",
+      "workspace": "fixtures/repo_sample",
+      "mode": "online",
+      "max_turns": 6,
+      "max_seconds": 60,
+      "repeat": 1,
+      "permission": "allow_all",
+      "expected_tools": ["grep", "bash"],
+      "forbidden_tools": ["read_file"],
+      "judge": {
+        "type": "composite",
+        "components": [
+          {"type": "trajectory", "expected_sequence": ["grep"], "weight": 0.5},
+          {"type": "rule", "rules": [{"kind": "no_forbidden_tools"}], "weight": 0.3},
+          {"type": "rule", "rules": [{"kind": "no_error"}], "weight": 0.2}
+        ]
+      },
+      "tags": ["tool_selection", "grep", "forbidden_read"]
+    }
+  ]
+}

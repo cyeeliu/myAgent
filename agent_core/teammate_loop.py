@@ -30,6 +30,25 @@ from agent_core.team_events import (
     TEAM_MEMBER_SPAWNED, TEAM_MEMBER_DONE, TEAM_MEMBER_SHUTDOWN,
     TEAM_TASK_COMPLETED,
 )
+
+
+def _forward_event(boss_session: Any, name: str, kind: str,
+                   payload: dict) -> None:
+    """T-M5: forward a teammate event to the boss session as a
+    ``team_event`` so the frontend can see teammate tool calls / results
+    / completion in real time.  Best-effort — never raises."""
+    if boss_session is None:
+        return
+    try:
+        boss_session.emit("team_event", {
+            "event": {
+                "type": f"teammate.{kind}",
+                "teammate": name,
+                "payload": payload,
+            },
+        })
+    except Exception:
+        pass
 from agent_core.team_protocol import (
     submit_plan as protocol_submit_plan,
     request_plan as protocol_request_plan,
@@ -477,7 +496,7 @@ def run_teammate_loop(
                         model=model, system=system, messages=messages,
                         tools=sub_tools, max_tokens=8000,
                         stream=True,
-                        events=TeammateEventShim(boss_session) if boss_session else None)
+                        events=TeammateEventShim(boss_session, name) if boss_session else None)
                 except Exception as _e:
                     # §二.5: prompt-too-long recovery — compact and retry
                     # instead of breaking immediately (which loses the
@@ -493,7 +512,7 @@ def run_teammate_loop(
                                 model=model, system=system, messages=messages,
                                 tools=sub_tools, max_tokens=8000,
                                 stream=True,
-                                events=TeammateEventShim(boss_session) if boss_session else None)
+                                events=TeammateEventShim(boss_session, name) if boss_session else None)
                         except Exception as _e2:
                             logger.error("teammate %s chat_create failed "
                                          "after compaction: %s: %s", name,
@@ -513,6 +532,9 @@ def run_teammate_loop(
                     if _reply:
                         BUS.send(name, overseer, _reply, "result")
                         sent_reply = True
+                    # T-M5: forward done event to boss
+                    _forward_event(boss_session, name, "done",
+                                   {"text": _reply or ""})
                     break
                 results = []
                 for block in response.content:
@@ -520,6 +542,10 @@ def run_teammate_loop(
                         if boss_session is not None and getattr(boss_session, "interrupted", False):
                             should_shutdown = True
                             break
+                        # T-M5: forward tool_start to boss
+                        _forward_event(boss_session, name, "tool_start",
+                                       {"id": block.id, "name": block.name,
+                                        "input": dict(block.input) if block.input else {}})
                         if block.name == "submit_plan":
                             output = protocol_submit_plan(
                                 name, block.input.get("plan", ""), overseer)
@@ -569,6 +595,11 @@ def run_teammate_loop(
                         results.append({"type": "tool_result",
                                         "tool_use_id": block.id,
                                         "content": str(output)})
+                        # T-M5: forward tool_result to boss
+                        _forward_event(boss_session, name, "tool_result",
+                                       {"id": block.id, "name": block.name,
+                                        "content": str(output)[:500],
+                                        "success": not str(output).startswith("Error:")})
                         if protocol_ctx["waiting_plan"]:
                             break
                 messages.append({"role": "user", "content": results})

@@ -341,6 +341,7 @@ export function SessionSidebar({
   // F-H4: session list with search
   const { sessions } = useSessionStore();
   const [sessionSearch, setSessionSearch] = useState('');
+  const [sessionVisibleCount, setSessionVisibleCount] = useState(15);
   const filteredSessions = useMemo(() => {
     if (!sessionSearch.trim()) return sessions;
     const q = sessionSearch.toLowerCase();
@@ -581,10 +582,10 @@ export function SessionSidebar({
             className="sidebar-sessions-search"
             placeholder={t('sessionSidebar.searchSessions')}
             value={sessionSearch}
-            onChange={(e) => setSessionSearch(e.target.value)}
+            onChange={(e) => { setSessionSearch(e.target.value); setSessionVisibleCount(15); }}
           />
           <div className="sidebar-sessions-list">
-            {filteredSessions.slice(0, 15).map((s: Session) => (
+            {filteredSessions.slice(0, sessionVisibleCount).map((s: Session) => (
               <SessionItem
                 key={s.session_id}
                 session={s}
@@ -597,6 +598,14 @@ export function SessionSidebar({
               <div className="sidebar-sessions-empty">
                 {t('sessionSidebar.noSessionsFound')}
               </div>
+            )}
+            {filteredSessions.length > sessionVisibleCount && (
+              <button
+                className="sidebar-sessions-more"
+                onClick={() => setSessionVisibleCount((c) => c + 20)}
+              >
+                {t('sessionSidebar.showMore', { count: filteredSessions.length - sessionVisibleCount })}
+              </button>
             )}
           </div>
         </div>
