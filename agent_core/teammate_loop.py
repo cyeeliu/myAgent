@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 from agent_core import adapter
 from agent_core.blocks import has_tool_use, extract_text
 from agent_core.bus import BUS
+from agent_core.compaction import snip_compact, micro_compact, tool_result_budget, estimate_size
 from agent_core.env import MODEL, session_dir, set_session_dir
 from agent_core.tasks import (
     _tasks_dir, can_start, claim_task, complete_task, list_tasks, load_task,
@@ -38,6 +39,60 @@ from agent_core.team_protocol import (
 
 IDLE_POLL_INTERVAL = 5
 IDLE_TIMEOUT = 60
+
+# Context management constants for the teammate loop.
+_TEAMMATE_MAX_MESSAGES = 80       # snip_compact threshold (was hardcoded -20:)
+_TEAMMATE_MAX_ITERATIONS = 60     # hard cap on inner work loop iterations
+_REPETITION_WINDOW = 4            # check last N assistant texts for repetition
+_REPETITION_THRESHOLD = 3         # N identical texts → break (stop repeating)
+
+
+def _detect_repetition(messages: list) -> bool:
+    """Check if the last few assistant text outputs are identical.
+
+    Returns True if the agent is stuck in a repetition loop (same text
+    output _REPETITION_THRESHOLD times in a row). This prevents the
+    teammate from burning tokens repeating itself when context is lost.
+    """
+    recent_texts = []
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", [])
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, list):
+            parts = []
+            for b in content:
+                btype = getattr(b, "type", None) or (b.get("type") if isinstance(b, dict) else None)
+                if btype == "text":
+                    btext = getattr(b, "text", None) or (b.get("text", "") if isinstance(b, dict) else "")
+                    parts.append(btext or "")
+            text = " ".join(parts).strip()
+        else:
+            continue
+        if text:
+            recent_texts.append(text)
+        if len(recent_texts) >= _REPETITION_WINDOW:
+            break
+    if len(recent_texts) < _REPETITION_THRESHOLD:
+        return False
+    # Check if the first _REPETITION_THRESHOLD entries are all identical.
+    check = recent_texts[:_REPETITION_THRESHOLD]
+    return all(t == check[0] for t in check)
+
+
+def _prepare_teammate_context(messages: list) -> list:
+    """Apply the same context budgeting pipeline as the main loop, but tuned
+    for the teammate's smaller context window.
+
+    Replaces the old hard truncation (last 20 messages) which was too aggressive
+    and caused context loss → repetition loops.
+    """
+    messages[:] = tool_result_budget(messages, max_bytes=100_000)
+    messages[:] = snip_compact(messages, max_messages=_TEAMMATE_MAX_MESSAGES)
+    messages[:] = micro_compact(messages)
+    return messages
 
 
 # ── Idle polling ──
@@ -323,9 +378,15 @@ def run_teammate_loop(
                     "content": f"<identity>You are '{name}', role: {role}. "
                                f"Continue your work.</identity>"})
             should_shutdown = False
-            for _ in range(10):
+            for _iteration in range(_TEAMMATE_MAX_ITERATIONS):
                 if boss_session is not None and getattr(boss_session, "interrupted", False):
                     should_shutdown = True
+                    break
+                # Repetition detection: if the last few assistant outputs are
+                # identical, the agent is stuck in a loop — break out and go
+                # idle. This is the primary fix for "回复一直重复".
+                if _detect_repetition(messages):
+                    logger.warning("Teammate %s detected repetition loop — breaking to idle", name)
                     break
                 inbox = BUS.read_inbox(name)
                 for msg in inbox:
@@ -345,9 +406,13 @@ def run_teammate_loop(
                     if non_protocol:
                         messages.append({"role": "user",
                             "content": "<inbox>" + json.dumps(non_protocol) + "</inbox>"})
+                # Context management: use proper compaction pipeline instead of
+                # the old hard truncation. This preserves important context and
+                # prevents repetition caused by context loss.
+                _prepare_teammate_context(messages)
                 try:
                     response = adapter.chat_create(
-                        model=model, system=system, messages=messages[-20:],
+                        model=model, system=system, messages=messages,
                         tools=sub_tools, max_tokens=8000,
                         stream=True,
                         events=TeammateEventShim(boss_session) if boss_session else None)

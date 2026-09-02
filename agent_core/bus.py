@@ -46,6 +46,26 @@ def unregister_bus_tap(session_path):
     _bus_taps.pop(str(session_path), None)
 
 
+# A2A team-message callbacks, keyed by str(session_dir()). When a teammate sends
+# a substantive message (type "result" or "message") to "boss", this callback is
+# invoked so the gateway can re-invoke the boss session with a fresh turn —
+# replacing the blocking `wait` tool pattern. The callback receives
+# (from_agent, content, msg_type, metadata).
+_team_callbacks: dict[str, object] = {}
+
+
+def register_team_callback(session_path, cb):
+    """Register an A2A callback(from_agent, content, msg_type, metadata) invoked
+    when a teammate sends a substantive message to 'boss'. The gateway uses this
+    to re-invoke the boss session with a fresh turn instead of blocking on the
+    `wait` tool."""
+    _team_callbacks[str(session_path)] = cb
+
+
+def unregister_team_callback(session_path):
+    _team_callbacks.pop(str(session_path), None)
+
+
 class MessageBus:
     def send(self, from_agent: str, to_agent: str, content: str,
              msg_type: str = "message", metadata: dict = None):
@@ -78,6 +98,17 @@ class MessageBus:
                 tap(from_agent, to_agent, content, msg_type, metadata or {})
             except Exception:
                 pass
+        # A2A: when a teammate sends a substantive message (result/message) to
+        # the boss, trigger the team callback so the gateway can re-invoke the
+        # boss session with a fresh turn. Protocol messages (plan_approval_*
+        # /shutdown_*) are handled by the boss listener / check_inbox instead.
+        if to_agent == "boss" and msg_type in ("result", "message"):
+            tcb = _team_callbacks.get(str(mdir.parent))
+            if tcb is not None:
+                try:
+                    tcb(from_agent, content, msg_type, metadata or {})
+                except Exception:
+                    pass
 
     def read_inbox(self, agent: str) -> list[dict]:
         inbox = _mailbox_dir() / f"{agent}.jsonl"

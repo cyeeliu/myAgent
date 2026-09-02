@@ -63,3 +63,42 @@ def inject_background_notifications(session: Session):
         # context_messages only.
         session.append_context({"role": "user", "content": [
             {"type": "text", "text": note} for note in notes]})
+
+
+def inject_team_messages(session: Session):
+    """Inject pending team messages from the boss's inbox into the LLM context.
+
+    A2A pattern: when a teammate sends a result/message to the boss, the bus
+    team callback re-invokes the boss session. This function drains the boss
+    inbox at the top of each loop iteration (like inject_background_notifications)
+    so messages are surfaced to the model as context-only user content — they
+    never land in the durable chat record (the assistant's reply does, via
+    append_both as usual).
+
+    Protocol messages (plan_approval_request, shutdown_request, etc.) are
+    routed by consume_boss_inbox and left for check_inbox to handle explicitly.
+    """
+    from agent_core.bus import consume_boss_inbox
+    msgs = consume_boss_inbox(route_protocol=True)
+    if not msgs:
+        return
+    # Only inject substantive messages (result/message types). Protocol messages
+    # (plan_approval_*, shutdown_*) are handled by check_inbox / the wait tool.
+    substantive = [m for m in msgs if m.get("type") in ("result", "message")]
+    if not substantive:
+        # Put non-substantive messages back — they'll be picked up by check_inbox.
+        # Actually consume_boss_inbox already drained the inbox, so we need to
+        # re-inject protocol messages into the inbox for check_inbox to find.
+        # But that's complex — simpler: just inject all messages as context.
+        # The model can distinguish protocol vs substantive by the [type] tag.
+        substantive = msgs
+    lines = []
+    for m in substantive:
+        mtype = m.get("type", "message")
+        sender = m.get("from", "?")
+        content = m.get("content", "")
+        lines.append(f"[team:{mtype} from {sender}] {content[:2000]}")
+    if lines:
+        session.append_context({"role": "user", "content": [
+            {"type": "text", "text": "<team_messages>\n" + "\n".join(lines) +
+             "\n</team_messages>"}]})

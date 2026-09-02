@@ -114,6 +114,14 @@ class SessionManager:
         # loop so the model reacts to the result instead of orphaning it until
         # the next user message.
         agent.on_background_complete = gs._on_background_complete
+        # A2A: when a teammate sends a result/message to the boss, re-invoke
+        # the boss session with a fresh turn instead of blocking on `wait`.
+        from agent_core.bus import register_team_callback
+        from agent_core.env import session_dir
+        try:
+            register_team_callback(str(session_dir()), gs._on_team_message)
+        except Exception:
+            pass
         return gs
 
     def create(self, transport: str = "auto", loop: asyncio.AbstractEventLoop = None,
@@ -173,7 +181,16 @@ class SessionManager:
 
     def drop(self, sid: str):
         with self._lock:
-            self._sessions.pop(sid, None)
+            gs = self._sessions.pop(sid, None)
+        if gs is not None:
+            # Unregister the A2A team callback so stale messages don't try to
+            # re-invoke a dropped session.
+            try:
+                from agent_core.bus import unregister_team_callback
+                from agent_core.env import session_dir
+                unregister_team_callback(str(session_dir()))
+            except Exception:
+                pass
 
 
 # Module-level singleton — the single source of truth for all gateway modules.

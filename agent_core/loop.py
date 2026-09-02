@@ -10,7 +10,7 @@ from agent_core.background import (
 )
 from agent_core.blocks import has_tool_use
 from agent_core.compaction import compact_history, reactive_compact
-from agent_core.context import build_user_content, inject_background_notifications, prepare_context, update_context
+from agent_core.context import build_user_content, inject_background_notifications, inject_team_messages, prepare_context, update_context
 from agent_core.cron import consume_cron_queue
 from agent_core.env import AUTO_COMPACT_WINDOW, CONTINUATION_PROMPT, DEFAULT_MAX_TOKENS, ESCALATED_MAX_TOKENS, MAX_RECOVERY_RETRIES, session_dir, set_session_dir, terminal_print
 from agent_core.hooks import check_permission, trigger_hooks
@@ -100,7 +100,8 @@ def agent_loop(session: Session):
             session.emit("text", {"text": f"  \033[35m[cron inject] {job.prompt[:60]}\033[0m"})
 
         inject_background_notifications(session)
-        _phase("cron+bg inject")
+        inject_team_messages(session)
+        _phase("cron+bg+team inject")
 
         if session.rounds_since_todo >= 3 and has_active_todos():
             # Internal nudge — LLM only, never the durable record / live chat.

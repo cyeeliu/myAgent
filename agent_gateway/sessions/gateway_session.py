@@ -279,7 +279,35 @@ class GatewaySession:
             self._worker = t
             t.start()
 
-    # ── listing metadata ──
+    def _on_team_message(self, from_agent: str, content: str,
+                         msg_type: str, metadata: dict):
+        """A2A callback: a teammate sent a substantive message to the boss.
+
+        Works like _on_background_complete:
+        - If a turn is in flight, the running loop's inject_team_messages will
+          drain the boss inbox on its next iteration — do nothing.
+        - If the turn has ended, start a fresh turn so the model can react to
+          the teammate's message. The message is already in the boss mailbox
+          (BUS.send wrote it before calling this callback), so inject_team_messages
+          at the top of the new turn will pick it up.
+        """
+        with self._worker_lock:
+            if self._worker is not None and self._worker.is_alive():
+                return  # the running loop will drain the inbox itself
+            # Don't start a turn if there's nothing to read (race: another
+            # callback already drained the inbox).
+            from agent_core.bus import BUS
+            if not BUS.has_inbox("boss"):
+                return
+            self.last_activity = time.time()
+            self.agent.interrupted = False
+            db.save_chat_record(self.session_id, self.agent.record,
+                                self.last_activity, self._title())
+            t = threading.Thread(target=self._run_turn,
+                                  name=f"agent-team-{self.session_id}",
+                                  daemon=True)
+            self._worker = t
+            t.start()
 
     def _title(self) -> str:
         """Derive a short title from the first user message in the chat record."""

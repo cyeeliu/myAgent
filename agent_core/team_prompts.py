@@ -66,7 +66,7 @@ def build_member_prompt(
 def build_coordination_instructions() -> str:
     """The async messaging discipline block for the leader prompt."""
     return (
-        "CRITICAL — async messaging discipline:\n"
+        "CRITICAL — async messaging discipline (A2A event-driven):\n"
         "- send_message is ASYNCHRONOUS: it returns 'Sent to <name>' immediately, "
         "NOT the recipient's reply. The reply arrives in your inbox on a LATER turn.\n"
         "- After send_message / request_plan / request_shutdown to a member, END "
@@ -144,20 +144,20 @@ def build_team_summary(
         "check_inbox, review_plan(request_id, approve, feedback). "
         "The leader coordinates members; you cannot message members directly.")
     lines.append(
-        "WAIT FOR THE TEAM TO FINISH — do NOT end your turn after the first report. "
-        "The leader sends multiple updates as it works (interim status, then a final "
-        "result). After approving the plan, loop:\n"
-        "  1. check_inbox — read whatever the leader has sent.\n"
-        "  2. If you have a FINAL result (a 'result' message or the leader reports "
-        "the task done and shuts down), you're finished — summarize for the user.\n"
-        "  3. Otherwise call wait(sources=[\"team\",\"background\"], timeout=600) to "
-        "block for the next update with NO LLM polling, then go to step 1.\n"
-        "Ending your turn after a non-final / interim report strands the leader's "
-        "later updates in your inbox undelivered.")
-    lines.append(
-        "When you have nothing active to do but are waiting on the leader or a "
-        "background task, call wait(sources=[\"team\",\"background\"], timeout=...) "
-        "instead of bash sleep — it blocks with no LLM polling and resumes the "
-        "instant a team message or background result arrives, then call check_inbox "
-        "or task_output to read it.")
+        "A2A EVENT-DRIVEN COORDINATION (do NOT use the wait tool for team):\n"
+        "- After start_team and after each send_to_leader / review_plan, END YOUR "
+        "TURN. The team works asynchronously in background threads.\n"
+        "- When a teammate sends a result or status update to you, the system "
+        "AUTOMATICALLY re-invokes you with a fresh turn — you don't need to poll "
+        "or wait. The teammate's message appears in your context as "
+        "<team_messages> at the start of the new turn.\n"
+        "- On each re-invocation: call check_inbox to drain any accumulated "
+        "messages, process them, then either:\n"
+        "  • Send new instructions to the leader and END YOUR TURN again.\n"
+        "  • If you have the FINAL result (the leader reports the task done and "
+        "    shuts down), summarize for the user and stop.\n"
+        "- NEVER call wait(sources=[\"team\",...]) — it blocks your turn and "
+        "freezes the session. The A2A callback handles re-invocation for you.\n"
+        "- The wait tool is still available for background tasks (sources=[\"background\"]) "
+        "if needed, but NOT for team coordination.")
     return "\n".join(lines)
