@@ -1,4 +1,16 @@
-"""evals.metrics.repeatability_metrics — Determinism / pass@k (5.14)."""
+"""evals.metrics.repeatability_metrics — Determinism / pass@k (5.14).
+
+E-Q14: these metrics are computed at two levels:
+  * Per-trace (below): returns "n/a" for a single trace because cross-repeat
+    scores are only known after aggregation. If a caller pre-populates
+    ``task["_repeat_scores"]`` (e.g. a custom harness), the per-trace functions
+    will compute over those scores.
+  * Aggregate (``evals.report.aggregate``): for each task with >=2 repeats,
+    determinism / pass@k are computed over the repeat judge scores and surfaced
+    on ``per_task[*].repeatability`` and the scorecard
+    (``repeatability.determinism`` / ``repeatability.pass_at_k``). This is the
+    primary path that makes repeatability observable in reports.
+"""
 from __future__ import annotations
 
 import statistics

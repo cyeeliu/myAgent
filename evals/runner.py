@@ -1,12 +1,24 @@
-"""evals.runner — SWE-bench-style evaluation harness for myAgent.
+"""evals.runner — DEPRECATED legacy SWE-bench-style evaluation harness.
 
-Runs the agent against a set of coding tasks (SWE-bench instances or custom
-test cases), measures pass@1 / pass@5, latency, token usage, and produces
-a JSON report + Markdown summary.
+.. deprecated::
+    This standalone SWE-bench script predates the new evaluation framework in
+    ``evals.engine`` and duplicates its responsibilities (task loading, agent
+    driving, reporting). It is kept only for backward compatibility with
+    ``python -m evals.runner`` invocations and will be removed in a future
+    release.
 
-Usage:
-    python -m evals.runner --dataset swe-bench-lite --limit 10
-    python -m evals.runner --custom evals/tasks/my_tasks.json
+    Use the new framework instead:
+
+    * CLI:      ``python -m evals.cli run --dataset <name>``
+    * Library:  ``from evals.engine.runner import EvalRunner``
+    * Parallel: ``from evals.engine.parallel import ParallelRunner``
+
+    To migrate a SWE-bench dataset, convert it to the new dataset schema (see
+    ``evals.cli dataset validate``) and run via ``evals.cli``.
+
+The legacy code below runs the agent against coding tasks (SWE-bench instances
+or custom test cases), measures pass@1 / pass@5, latency, token usage, and
+produces a JSON report + Markdown summary.
 """
 from __future__ import annotations
 
@@ -16,9 +28,22 @@ import os
 import subprocess
 import sys
 import time
+import warnings
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
+
+_DEPRECATION_MSG = (
+    "evals.runner is deprecated and will be removed in a future release. "
+    "Use the new framework: `python -m evals.cli run` (CLI) or "
+    "`evals.engine.runner.EvalRunner` / `evals.engine.parallel.ParallelRunner` "
+    "(library)."
+)
+
+
+def _warn_deprecated() -> None:
+    """Emit a DeprecationWarning for the legacy runner (once per process)."""
+    warnings.warn(_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
 
 # ── Data structures ──
 
@@ -276,7 +301,11 @@ def evaluate(
     workdir: str = "/tmp/swe-bench-eval",
     model_id: str = "",
 ) -> EvalReport:
-    """Run the agent against all tasks and produce a report."""
+    """Run the agent against all tasks and produce a report.
+
+    .. deprecated:: use ``evals.engine.runner.EvalRunner.run_dataset`` instead.
+    """
+    _warn_deprecated()
     report = EvalReport(dataset=dataset_name)
     workdir_path = Path(workdir)
     workdir_path.mkdir(parents=True, exist_ok=True)
@@ -324,6 +353,7 @@ def evaluate(
 
 
 def main():
+    _warn_deprecated()
     parser = argparse.ArgumentParser(description="SWE-bench evaluation runner")
     parser.add_argument("--dataset", default="swe-bench-lite",
                         help="SWE-bench dataset name")

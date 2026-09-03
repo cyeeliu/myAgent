@@ -58,6 +58,21 @@ def set_session_dir(p) -> None:
     _sess_local.session = p
 
 
+def clear_session_dir() -> None:
+    """Unbind the per-session dir (restore to workspace_dir() default).
+
+    Used by the eval harness and other callers that temporarily bind a
+    session dir on a shared thread and must restore the default afterward
+    so subsequent runs on the same (pool-reused) thread don't inherit a
+    stale session root.
+    """
+    if hasattr(_sess_local, "session"):
+        try:
+            del _sess_local.session
+        except AttributeError:
+            pass
+
+
 def workdir() -> Path:
     """CWD for file ops / bash / MCP / subagents. Per-session: returns
     session_dir() (workspace/.sessions/<sid>/ in the gateway, workspace_dir()

@@ -50,15 +50,54 @@ def aggregate_results(results: list, dataset: dict, run_id: str,
 
     # Per-task summary
     task_summary = []
+    # E-Q14: aggregate-level repeatability. The per-trace repeatability_metrics
+    # functions return "n/a" for a single trace because cross-repeat scores are
+    # only known after aggregation. We compute determinism / pass@k here (over
+    # each task's repeats) and surface them on per_task + the scorecard, so the
+    # repeatability metrics are populated rather than dead code.
+    rep_det_values: list[float] = []
+    rep_passk_values: list[float] = []
     for task_id, reps in per_task.items():
         scores = [r.judge.get("score", 0.0) for r in reps if r.status == "ok"]
-        task_summary.append({
+        passed_flags = [r.judge.get("passed", False) for r in reps if r.status == "ok"]
+        entry = {
             "task_id": task_id,
             "reps": len(reps),
             "mean_score": statistics.mean(scores) if scores else 0.0,
-            "pass_count": sum(1 for r in reps if r.judge.get("passed", False)),
+            "pass_count": sum(1 for p in passed_flags if p),
             "status": "ok" if all(r.status == "ok" for r in reps) else "has_errors",
-        })
+        }
+        if len(scores) >= 2:
+            std = statistics.stdev(scores)
+            det = max(0.0, 1.0 - std)
+            entry["repeatability"] = {
+                "determinism": det,
+                "stddev": std,
+                "n": len(scores),
+                "pass_at_k": (sum(1 for p in passed_flags if p) / len(scores)),
+            }
+            rep_det_values.append(det)
+            rep_passk_values.append(entry["repeatability"]["pass_at_k"])
+        elif scores:
+            entry["repeatability"] = {"determinism": 1.0, "n": len(scores),
+                                      "note": "need >=2 runs for stddev"}
+        task_summary.append(entry)
+
+    # Surface aggregate repeatability in the scorecard too.
+    if rep_det_values:
+        scorecard["repeatability.determinism"] = {
+            "mean": statistics.mean(rep_det_values),
+            "stddev": statistics.stdev(rep_det_values) if len(rep_det_values) > 1 else 0.0,
+            "min": min(rep_det_values), "max": max(rep_det_values),
+            "count": len(rep_det_values),
+        }
+    if rep_passk_values:
+        scorecard["repeatability.pass_at_k"] = {
+            "mean": statistics.mean(rep_passk_values),
+            "stddev": statistics.stdev(rep_passk_values) if len(rep_passk_values) > 1 else 0.0,
+            "min": min(rep_passk_values), "max": max(rep_passk_values),
+            "count": len(rep_passk_values),
+        }
 
     return {
         "run_id": run_id,

@@ -28,6 +28,7 @@ from .paths import (
     set_workspace_dir,
     session_dir,
     set_session_dir,
+    clear_session_dir,
     workdir,
     set_workdir,
     _transcript_dir,

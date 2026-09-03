@@ -37,9 +37,13 @@ class LLMJudge(Judge):
 
         prompt = self._build_prompt(agent_output, task)
 
+        # E-Q12: resolve the judge model with a clear precedence:
+        #   explicit ctor arg > task["judge_model"] > $JUDGE_MODEL > $MODEL_ID > default
+        judge_model = self._resolve_model(task)
+
         scores = []
         for _ in range(self.consistency_runs):
-            score = self._call_judge(prompt)
+            score = self._call_judge(prompt, judge_model)
             if score is not None:
                 scores.append(score)
 
@@ -47,8 +51,31 @@ class LLMJudge(Judge):
             return JudgeResult(
                 score=0.0, passed=False,
                 reasoning="LLM judge unavailable (no API key or error)",
-                details={"rubric": self.rubric, "model": self.model or "default"},
+                details={"rubric": self.rubric, "model": judge_model},
             )
+
+        avg_score = sum(scores) / len(scores)
+        return JudgeResult(
+            score=avg_score, passed=avg_score >= 0.5,
+            reasoning=f"LLM judge avg={avg_score:.2f} over {len(scores)} runs",
+            details={
+                "rubric": self.rubric, "judge_model": judge_model,
+                "prompt": prompt[:500], "scores": scores,
+            },
+        )
+
+    def _resolve_model(self, task: dict) -> str:
+        """E-Q12: judge model precedence — ctor > task > env > default."""
+        if self.model:
+            return self.model
+        task_model = task.get("judge_model")
+        if task_model:
+            return task_model
+        import os
+        env_judge = os.environ.get("JUDGE_MODEL")
+        if env_judge:
+            return env_judge
+        return os.environ.get("MODEL_ID", "gpt-4o-mini")
 
         avg_score = sum(scores) / len(scores)
         return JudgeResult(
@@ -69,11 +96,9 @@ class LLMJudge(Judge):
             f"Respond with a JSON object: {{\"score\": <float>, \"reasoning\": \"<text>\"}}"
         )
 
-    def _call_judge(self, prompt: str) -> float | None:
+    def _call_judge(self, prompt: str, model: str) -> float | None:
         try:
             from agent_core.adapter import chat_create
-            import os
-            model = self.model or os.environ.get("MODEL_ID", "gpt-4o-mini")
             response = chat_create(
                 model=model,
                 system="You are an evaluation judge. Output only JSON.",

@@ -40,7 +40,8 @@ def build_judge(spec: dict) -> Judge:
         from evals.judges.llm_judge import LLMJudge
         return LLMJudge(spec.get("rubric", ""),
                         spec.get("model", None),
-                        spec.get("weight", 1.0))
+                        spec.get("weight", 1.0),
+                        spec.get("consistency_runs", 1))
     elif jtype == "composite":
         from evals.judges.composite_judge import CompositeJudge
         components = [build_judge(c) for c in spec.get("components", [])]

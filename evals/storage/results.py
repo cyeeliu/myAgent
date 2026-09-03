@@ -6,12 +6,28 @@ import os
 from pathlib import Path
 from typing import Any
 
+# E-L1: Anchor results root at REPO_ROOT instead of relative CWD so the store
+# reads/writes the same location regardless of the process working directory.
+try:
+    from agent_core.paths import REPO_ROOT
+except Exception:  # pragma: no cover — agent_core always present in practice
+    REPO_ROOT = Path.cwd()
+
+_RESULTS_ROOT = REPO_ROOT / "evals" / "results"
+
 
 class ResultStore:
     """Persist evaluation reports to JSON files, optionally to Postgres."""
 
-    def __init__(self, base_dir: str = "evals/results"):
-        self.base_dir = Path(base_dir)
+    def __init__(self, base_dir: str | Path | None = None):
+        # E-L1: default to the REPO_ROOT-anchored results root; an explicit
+        # absolute ``base_dir`` overrides it (relative paths resolve against
+        # REPO_ROOT so callers stay CWD-independent).
+        if base_dir is None:
+            self.base_dir = _RESULTS_ROOT
+        else:
+            p = Path(base_dir)
+            self.base_dir = p if p.is_absolute() else REPO_ROOT / p
 
     def save(self, report: dict) -> Path:
         """Save report to JSON file. Returns the directory path."""

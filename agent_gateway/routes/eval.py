@@ -1,4 +1,10 @@
-"""REST routes for evaluation data plane (large payloads: traces, reports)."""
+"""REST routes for evaluation data + control plane.
+
+Data plane (large payloads: traces, reports) is served directly here.
+Control plane (start / list / get / cancel / compare runs) is provided by
+``evals.api`` and merged into this router under the same ``/api/eval`` prefix
+(E-F9), so the full REST eval interface is live whenever the gateway runs.
+"""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
@@ -29,3 +35,14 @@ async def get_report(run_id: str, format: str = "json"):
     if format == "json":
         return JSONResponse(content=report)
     raise HTTPException(status_code=400, detail="unsupported format")
+
+
+# E-F9: merge the eval control-plane router (start/list/get/cancel/compare).
+# evals.api.router has no prefix of its own, so it inherits this router's
+# /api/eval prefix without path collisions (control-plane endpoints differ
+# from the data-plane endpoints above).
+try:
+    from evals.api import router as _eval_control_router
+    router.include_router(_eval_control_router)
+except Exception:  # pragma: no cover — evals.api requires fastapi; gateway has it
+    pass
