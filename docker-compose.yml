@@ -74,10 +74,11 @@ services:
       # these into /app/workspace/skills on gateway start). :ro so the host
       # skills/ dir is the source of truth; edits apply on restart.
       - ./skills:/app/skills:ro
-      # Eval datasets (evals/datasets/*.json) read by EvalRunManager.list_datasets
-      # to populate the EvalsPanel dataset dropdown. :ro so the host evals/ dir is
-      # the source of truth; dataset edits apply on restart without a rebuild.
-      - ./evals:/app/evals:ro
+      # Eval package (datasets/judges/metrics/engine/...). Bind-mounted read-write
+      # so (a) code edits apply on restart without a rebuild and (b) ResultStore.save()
+      # and WorkspaceIsolator.isolate() can write evals/results/ and evals/runs/.
+      # Run artifacts (results/, runs/) are gitignored so they don't pollute the repo.
+      - ./evals:/app/evals
     # bubblewrap sandbox (agent_core/sandbox.py) needs to create mount+user
     # namespaces inside the container, which docker's default seccomp/cap set
     # blocks. Relax just enough for bwrap; the gateway still binds 127.0.0.1

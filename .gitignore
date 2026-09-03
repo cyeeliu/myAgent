@@ -217,3 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 node_modules/
+
+# Eval run artifacts (written by ResultStore.save and WorkspaceIsolator.isolate)
+evals/results/
+evals/runs/
