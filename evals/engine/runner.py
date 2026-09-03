@@ -21,6 +21,18 @@ from evals.engine.scripted_llm import ScriptedLLM
 from evals.judges.base import Judge, build_judge
 from evals.metrics.base import compute_all_metrics
 
+try:
+    from evals.observability.logging import get_eval_logger
+    _eval_logger = get_eval_logger()
+except Exception:
+    _eval_logger = None
+
+try:
+    from evals.observability.event_stream import get_emitter
+    _eval_emitter = get_emitter()
+except Exception:
+    _eval_emitter = None
+
 # Import all metric modules to trigger registration
 import evals.metrics.tool_metrics
 import evals.metrics.perf_metrics
@@ -116,6 +128,14 @@ class EvalRunner:
         if limit > 0:
             tasks = tasks[:limit]
 
+        if _eval_logger is not None:
+            _eval_logger.emit("INFO", "run_started", f"eval run started: {run_id}",
+                              extra={"run_id": run_id, "dataset": dataset.get("name", ""),
+                                     "model": model, "mode": mode})
+        if _eval_emitter is not None:
+            _eval_emitter.emit_run_started(run_id, total=len(tasks),
+                                           dataset=dataset.get("name", ""), model=model)
+
         # E-F10: Incremental mode — only re-run tasks that failed/errored in a
         # previous run. Enables fast feedback loops without re-running greens.
         only_failed_from = opts.get("only_failed_from")
@@ -138,18 +158,44 @@ class EvalRunner:
                 # E-H2: Fire progress callback after each task.
                 if on_progress is not None:
                     try:
-                        on_progress({
+                        progress_event = {
                             "task_id": result.task_id,
                             "rep": result.rep,
                             "status": result.status,
                             "error": result.error,
-                        })
+                        }
+                        on_progress(progress_event)
+                        if _eval_logger is not None:
+                            _eval_logger.emit("INFO", "progress",
+                                              f"progress: {result.task_id} {result.status}",
+                                              extra={"run_id": run_id, "task_id": result.task_id,
+                                                     "rep": result.rep, "status": result.status})
+                        if _eval_emitter is not None:
+                            _eval_emitter.emit_progress(run_id, task_id=result.task_id,
+                                                        completed=len(all_results), total=len(tasks))
                     except Exception:
                         pass
 
         # Aggregate
         from evals.report.aggregate import aggregate_results
         report = aggregate_results(all_results, dataset, run_id, model, mode, opts)
+
+        if _eval_logger is not None:
+            cancelled = cancel_event is not None and cancel_event.is_set()
+            if cancelled:
+                _eval_logger.emit("INFO", "run_cancelled", f"eval run cancelled: {run_id}",
+                                  extra={"run_id": run_id})
+            else:
+                _eval_logger.emit("INFO", "run_completed", f"eval run completed: {run_id}",
+                                  extra={"run_id": run_id,
+                                         "total_tasks": report.get("total_tasks", 0)})
+        if _eval_emitter is not None:
+            cancelled = cancel_event is not None and cancel_event.is_set()
+            if cancelled:
+                _eval_emitter.emit_run_cancelled(run_id)
+            else:
+                _eval_emitter.emit_run_completed(run_id, completed=len(all_results),
+                                                 total=len(tasks))
 
         # E-F10: Regression detection against a baseline run.
         baseline_run_id = opts.get("regression_baseline")
@@ -198,17 +244,49 @@ class EvalRunner:
         task_id = task.get("id", "unknown")
         max_seconds = task.get("max_seconds", 120)
 
+        if _eval_logger is not None:
+            _eval_logger.emit("INFO", "task_started", f"task started: {task_id}",
+                              extra={"run_id": run_id, "task_id": task_id, "rep": rep})
+        if _eval_emitter is not None:
+            _eval_emitter.emit_task_started(run_id, task_id, rep=rep)
+
         # Offline mode: replay from record
         if mode == "offline" or task.get("mode") == "offline":
-            return self._run_offline(task, rep, run_id, model)
+            result = self._run_offline(task, rep, run_id, model)
+            if _eval_logger is not None:
+                et = "task_completed" if result.status == "ok" else "task_failed"
+                _eval_logger.emit("INFO", et, f"task {et}: {task_id}",
+                                  extra={"run_id": run_id, "task_id": task_id,
+                                         "status": result.status, "rep": rep})
+            if _eval_emitter is not None:
+                if result.status == "ok":
+                    _eval_emitter.emit_task_completed(run_id, task_id, rep=rep)
+                else:
+                    _eval_emitter.emit_task_failed(run_id, task_id, rep=rep,
+                                                   error=result.error, error_kind=result.status)
+            return result
 
         # Online or mock mode
         try:
             ws = self.workspace.isolate(task, run_id)
             trace = self._drive_agent(task, ws, model, mode, max_seconds,
                                       cancel_event=cancel_event)
-            return self._score(trace, task, rep, run_id)
+            result = self._score(trace, task, rep, run_id)
+            if _eval_logger is not None:
+                _eval_logger.emit("INFO", "task_completed", f"task completed: {task_id}",
+                                  extra={"run_id": run_id, "task_id": task_id,
+                                         "status": result.status, "rep": rep})
+            if _eval_emitter is not None:
+                _eval_emitter.emit_task_completed(run_id, task_id, rep=rep)
+            return result
         except Exception as e:
+            if _eval_logger is not None:
+                _eval_logger.emit("ERROR", "task_failed", f"task failed: {task_id}: {e}",
+                                  extra={"run_id": run_id, "task_id": task_id,
+                                         "status": "error", "rep": rep, "error": str(e)})
+            if _eval_emitter is not None:
+                _eval_emitter.emit_task_failed(run_id, task_id, rep=rep,
+                                               error=str(e), error_kind="exception")
             return TaskResult(task_id=task_id, rep=rep, status="error", error=str(e))
 
     def _drive_agent(self, task: dict, ws: Path, model: str,

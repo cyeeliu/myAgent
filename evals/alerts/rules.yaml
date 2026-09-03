@@ -1,0 +1,40 @@
+# Eval alert rules — example configuration.
+# Each rule compares a metric against a threshold using an operator.
+# Operators: gt (greater than), lt (less than), eq (equal to)
+# Severity: info, warning, critical
+
+rules:
+  - name: pass_rate_low
+    metric: pass_rate
+    operator: lt
+    threshold: 0.8
+    severity: critical
+    enabled: true
+
+  - name: mean_score_low
+    metric: mean_score
+    operator: lt
+    threshold: 0.6
+    severity: warning
+    enabled: true
+
+  - name: cost_high
+    metric: total_cost
+    operator: gt
+    threshold: 10.0
+    severity: warning
+    enabled: true
+
+  - name: error_rate_high
+    metric: error_rate
+    operator: gt
+    threshold: 0.2
+    severity: critical
+    enabled: true
+
+  - name: latency_high
+    metric: mean_latency_ms
+    operator: gt
+    threshold: 5000
+    severity: info
+    enabled: true

@@ -53,6 +53,9 @@ class EvalRunHandle:
         self.error: Optional[str] = None
         self.scorecard: Optional[dict] = None
         self.progress: list[dict] = []  # accumulated progress events
+        self.per_task_status: dict[str, dict] = {}
+        self.current_task_id: str = ""
+        self.total_tasks: int = 0
 
 
 class EvalRunManager:
@@ -145,11 +148,23 @@ class EvalRunManager:
             if limit > 0:
                 dataset_data["tasks"] = dataset_data.get("tasks", [])[:limit]
 
+            handle.total_tasks = len(dataset_data.get("tasks", []))
+
             # E-H2: Progress callback — actually pass it to run_dataset.
             def on_progress(event: dict):
                 if handle.cancelled.is_set():
                     return
                 handle.progress.append(event)
+                task_id = event.get("task_id", "")
+                status = event.get("status", "")
+                if task_id:
+                    handle.current_task_id = task_id
+                    handle.per_task_status[task_id] = {
+                        "status": status,
+                        "started_at": time.time(),
+                        "duration_ms": event.get("duration_ms", 0),
+                        "rep": event.get("rep", 0),
+                    }
                 self._emit(handle.run_id, "eval_progress", {"run_id": handle.run_id, **event})
 
             # Run
@@ -344,10 +359,17 @@ class EvalRunManager:
                 }
         return matrix
 
-    def trend(self, dataset: str, metric: str) -> list[dict]:
-        """Get metric trend across runs for a dataset."""
+    def trend(self, dataset: str, metric: str,
+              metrics: list[str] | None = None,
+              since: float | None = None, until: float | None = None) -> list[dict]:
+        """Get metric trend across runs for a dataset.
+
+        Extended: supports multi-metric via ``metrics`` list and time-range
+        filtering via ``since``/``until``.
+        """
         from evals.storage.results import ResultStore
         store = ResultStore()
+        all_metrics = list(metrics) if metrics else [metric]
         points = []
         for run_id in store.list_runs():
             # E-H1: Validate run_id.
@@ -356,16 +378,20 @@ class EvalRunManager:
             report = store.load(run_id)
             if not report or report.get("dataset") != dataset:
                 continue
+            ts = report.get("started_at", 0)
+            if since and ts < since:
+                continue
+            if until and ts > until:
+                continue
             scorecard = report.get("scorecard", {})
-            value = scorecard.get(metric)
-            if value is not None:
-                # E-M5: scorecard values are {mean, stddev, min, max, count}
-                # dicts — extract the numeric mean for the trend chart.
-                if isinstance(value, dict):
-                    value = value.get("mean", 0.0)
-                points.append({
-                    "run_id": run_id,
-                    "ts": report.get("started_at", 0),
-                    "value": value,
-                })
+            entry: dict = {"run_id": run_id, "ts": ts}
+            for m in all_metrics:
+                value = scorecard.get(m)
+                if value is not None:
+                    if isinstance(value, dict):
+                        value = value.get("mean", 0.0)
+                    entry[m] = value
+            if len(all_metrics) == 1:
+                entry["value"] = entry.get(all_metrics[0])
+            points.append(entry)
         return sorted(points, key=lambda p: p["ts"])

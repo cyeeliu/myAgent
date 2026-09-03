@@ -48,4 +48,17 @@ def create_app() -> FastAPI:
     # Include all domain routers (sessions, agents, models, misc, file-api, SSE)
     include_routers(app)
 
+    # Mount eval observability router (/eval/obs/*)
+    try:
+        from evals.observability import ObservabilityRouter
+        from evals.storage.results import ResultStore
+        from agent_gateway.services.eval_run_manager import get_eval_runs
+
+        obs = ObservabilityRouter()
+        obs.init(get_eval_runs(), ResultStore())
+        app.include_router(obs.router)
+    except Exception as _e:
+        import logging
+        logging.getLogger("agent_gateway").warning("eval observability disabled: %s", _e)
+
     return app
