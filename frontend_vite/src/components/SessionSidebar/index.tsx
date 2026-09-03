@@ -69,8 +69,6 @@ interface NavItem {
 
 const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.chat', icon: <img src={dialogueIcon} alt="" /> },
-  { key: 'agents', labelKey: 'nav.agent', icon: <img src={agentIcon} alt="" /> },
-  { key: 'sessions', labelKey: 'nav.sessions', icon: <img src={sessionIcon} alt="" /> },
   {
     key: 'teams',
     labelKey: 'nav.teams',
@@ -559,9 +557,9 @@ export function SessionSidebar({
         </button>
       </div>
 
-      {/* 智能体 Section */}
+      {/* Navigation Section */}
       <div className="nav-section">
-        <div className="nav-section-label">{t('nav.agent')}</div>
+        <div className="nav-section-label">{t('nav.navigation')}</div>
         <button className="new-chat-btn" onClick={handleNewSession}>
           <span className="new-chat-btn__left">
             <img src={plusIcon} alt="" />
@@ -583,44 +581,44 @@ export function SessionSidebar({
       </div>
 
       {/* F-H4: Quick session list with search — switch sessions without leaving chat */}
-      {sessions.length > 0 && (
-        <div className="sidebar-sessions-section">
-          <div className="sidebar-sessions-header">
-            <span className="nav-section-label">{t('nav.sessions')}</span>
-          </div>
-          <input
-            type="text"
-            className="sidebar-sessions-search"
-            placeholder={t('sessionSidebar.searchSessions')}
-            value={sessionSearch}
-            onChange={(e) => { setSessionSearch(e.target.value); setSessionVisibleCount(15); }}
-          />
-          <div className="sidebar-sessions-list">
-            {filteredSessions.slice(0, sessionVisibleCount).map((s: Session) => (
-              <SessionItem
-                key={s.session_id}
-                session={s}
-                isActive={s.session_id === sessionId}
-                onClick={() => handleRestoreSession(s.session_id)}
-                onDelete={() => handleDeleteSession(s.session_id)}
-              />
-            ))}
-            {filteredSessions.length === 0 && (
-              <div className="sidebar-sessions-empty">
-                {t('sessionSidebar.noSessionsFound')}
-              </div>
-            )}
-            {filteredSessions.length > sessionVisibleCount && (
-              <button
-                className="sidebar-sessions-more"
-                onClick={() => setSessionVisibleCount((c) => c + 20)}
-              >
-                {t('sessionSidebar.showMore', { count: filteredSessions.length - sessionVisibleCount })}
-              </button>
-            )}
-          </div>
+      <div className="sidebar-sessions-section">
+        <div className="sidebar-sessions-header">
+          <span className="nav-section-label">{t('nav.sessions')}</span>
         </div>
-      )}
+        <input
+          type="text"
+          className="sidebar-sessions-search"
+          placeholder={t('sessionSidebar.searchSessions')}
+          value={sessionSearch}
+          onChange={(e) => { setSessionSearch(e.target.value); setSessionVisibleCount(15); }}
+        />
+        <div className="sidebar-sessions-list">
+          {filteredSessions.slice(0, sessionVisibleCount).map((s: Session) => (
+            <SessionItem
+              key={s.session_id}
+              session={s}
+              isActive={s.session_id === sessionId}
+              onClick={() => handleRestoreSession(s.session_id)}
+              onDelete={() => handleDeleteSession(s.session_id)}
+            />
+          ))}
+          {filteredSessions.length === 0 && (
+            <div className="sidebar-sessions-empty">
+              {sessionSearch.trim()
+                ? t('sessionSidebar.noSessionsFound')
+                : t('sessionSidebar.noSessionsYet')}
+            </div>
+          )}
+          {filteredSessions.length > sessionVisibleCount && (
+            <button
+              className="sidebar-sessions-more"
+              onClick={() => setSessionVisibleCount((c) => c + 20)}
+            >
+              {t('sessionSidebar.showMore', { count: filteredSessions.length - sessionVisibleCount })}
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* Settings Section */}
       <div className="nav-section">

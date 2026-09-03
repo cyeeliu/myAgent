@@ -4,7 +4,7 @@ import os
 import re
 import subprocess
 import threading
-from agent_core.env import REPO_ROOT, client, workdir
+from agent_core.env import REPO_ROOT, client, workdir, workspace_dir
 # BUILTIN_TOOLS/BUILTIN_HANDLERS imported lazily inside assemble_tool_pool to
 # avoid a tools<->mcp circular import (tools top-imports connect_mcp).
 
@@ -142,10 +142,12 @@ def _mcp_clients() -> dict:
     return mcp_clients
 
 def _load_mcp_config() -> dict:
-    """Load server definitions from mcp.json (workdir first, then REPO_ROOT).
-    Schema: {"servers": {"name": {"command": "...", "args": [...], "env": {...}}}}."""
+    """Load server definitions from mcp.json (workspace_dir first, then REPO_ROOT).
+    Schema: {"servers": {"name": {"command": "...", "args": [...], "env": {...}}}}.
+    Uses workspace_dir() (shared) not workdir() (per-session) so a single mcp.json
+    in the shared workspace is found regardless of which session is active."""
     import json as _j
-    for base in (workdir(), REPO_ROOT):
+    for base in (workspace_dir(), REPO_ROOT):
         f = base / "mcp.json"
         if f.exists():
             try:

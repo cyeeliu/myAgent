@@ -59,8 +59,12 @@ def set_session_dir(p) -> None:
 
 
 def workdir() -> Path:
-    """CWD for file ops / bash / MCP / subagents. Alias for workspace_dir()."""
-    return workspace_dir()
+    """CWD for file ops / bash / MCP / subagents. Per-session: returns
+    session_dir() (workspace/.sessions/<sid>/ in the gateway, workspace_dir()
+    in CLI when no session is bound) so each session gets an isolated work
+    directory. Shared state (.memory/, skills/, .permissions/) stays under
+    workspace_dir() via the dedicated workspace_dir() accessor."""
+    return session_dir()
 
 
 def set_workdir(p) -> None:

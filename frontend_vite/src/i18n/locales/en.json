@@ -17,6 +17,7 @@
   },
   "nav": {
     "chat": "Chat",
+    "navigation": "Navigation",
     "agent": "Agent",
     "teams": "Teams",
     "sessions": "Sessions",
@@ -423,6 +424,7 @@
     "appearance": "Appearance",
     "searchSessions": "Search sessions...",
     "noSessionsFound": "No sessions found",
+    "noSessionsYet": "No sessions yet — click above to create one",
     "showMore": "Show more ({{count}} remaining)"
   },
   "heartbeat": {

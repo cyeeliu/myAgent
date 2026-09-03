@@ -27,10 +27,14 @@ RUN printf '#!/bin/sh\nexec /usr/local/bin/node /usr/local/lib/node_modules/npm/
  && printf '#!/bin/sh\nexec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npx-cli.js "$@"\n' > /usr/local/bin/npx && chmod +x /usr/local/bin/npx
 
 # core + gateway package + skills (skills are prompts the agent reads at runtime)
+# + evals (datasets/judges/metrics/... read by EvalRunManager to populate the
+# EvalsPanel dataset dropdown and run evaluations). Copied into the image so a
+# production build (without the dev bind-mounts in docker-compose) still has data.
 COPY code.py /app/code.py
 COPY agent_core /app/agent_core
 COPY agent_gateway /app/agent_gateway
 COPY skills /app/skills
+COPY evals /app/evals
 
 EXPOSE 8000
 
