@@ -11,6 +11,10 @@ class ScriptedResponse:
     content: list[dict]      # content blocks
     interrupted: bool = False
     usage: dict = field(default_factory=dict)
+    stop_reason: str = "end_turn"   # end_turn | max_tokens | interrupted — must
+                                    # match adapter.chat_create's SimpleNamespace
+                                    # shape so agent_loop's `response.stop_reason`
+                                    # access doesn't raise AttributeError
 
 
 def make_text_response(text: str) -> ScriptedResponse:
@@ -60,6 +64,7 @@ class ScriptedLLM:
             content=resp.content,
             interrupted=resp.interrupted,
             usage=resp.usage,
+            stop_reason=resp.stop_reason,
         )
 
     @property
