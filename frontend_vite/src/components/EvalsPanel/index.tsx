@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useEvalStore } from '../../stores/evalStore';
 import { useSessionStore } from '../../stores/sessionStore';
+import { webClient } from '../../services/webClient';
 import './EvalsPanel.css';
 
 export function EvalsPanel() {
@@ -11,12 +12,24 @@ export function EvalsPanel() {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [traceTaskId, setTraceTaskId] = useState<string | null>(null);
   const [traceData, setTraceData] = useState<string>('');
+  const [wsReady, setWsReady] = useState<boolean>(false);
 
-  // Load datasets and runs on mount
+  // Subscribe to WS connection state — retry loadDatasets/loadRuns when ready
   useEffect(() => {
+    const unsub = webClient.onStateChange((state) => {
+      setWsReady(state === 'ready');
+    });
+    // Also check current state immediately
+    setWsReady(webClient.getState() === 'ready');
+    return () => { unsub(); };
+  }, []);
+
+  // Load datasets and runs on mount AND when WS becomes ready
+  useEffect(() => {
+    if (!wsReady) return;
     void evalStore.loadDatasets();
     void evalStore.loadRuns();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [wsReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Set default model
   useEffect(() => {
@@ -82,6 +95,8 @@ export function EvalsPanel() {
           onChange={(e) => evalStore.setSelectedDataset(e.target.value)}
           disabled={isRunning}
         >
+          {!wsReady && <option value="" disabled>{t('common.loading')}</option>}
+          {wsReady && evalStore.datasets.length === 0 && <option value="" disabled>—</option>}
           {evalStore.datasets.map((d) => (
             <option key={d.name} value={d.name}>
               {d.name} ({d.task_count} tasks)

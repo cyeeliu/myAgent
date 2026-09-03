@@ -121,8 +121,8 @@ export const useEvalStore = create<EvalState>((set, get) => ({
     try {
       const data = await webRequest<{ datasets: DatasetInfo[] }>('eval.datasets.list', {});
       set({ datasets: data?.datasets || [] });
-    } catch {
-      // ignore — panel will show empty state
+    } catch (e) {
+      console.error('[evalStore] loadDatasets failed:', e);
     }
   },
 
@@ -130,8 +130,8 @@ export const useEvalStore = create<EvalState>((set, get) => ({
     try {
       const data = await webRequest<{ runs: RunSummary[] }>('eval.run.list', { offset: 0, limit: 50 });
       set({ runs: data?.runs || [] });
-    } catch {
-      // ignore
+    } catch (e) {
+      console.error('[evalStore] loadRuns failed:', e);
     }
   },
 

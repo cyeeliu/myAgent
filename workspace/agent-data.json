@@ -1,0 +1,59 @@
+{
+  "workspace/skills/agent-builder": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/agent-builder/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/agent-builder/references": [
+    {
+      "name": "agent-philosophy.md",
+      "path": "agent/workspace/skills/agent-builder/references/agent-philosophy.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "minimal-agent.py",
+      "path": "agent/workspace/skills/agent-builder/references/minimal-agent.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "subagent-pattern.py",
+      "path": "agent/workspace/skills/agent-builder/references/subagent-pattern.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "tool-templates.py",
+      "path": "agent/workspace/skills/agent-builder/references/tool-templates.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/agent-builder/scripts": [
+    {
+      "name": "init_agent.py",
+      "path": "agent/workspace/skills/agent-builder/scripts/init_agent.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace/skills/code-review": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/code-review/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/mcp-builder": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/mcp-builder/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "workspace/skills/pdf": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/pdf/SKILL.md",
+      "isMarkdown": true
+    }
+  ]
+}
