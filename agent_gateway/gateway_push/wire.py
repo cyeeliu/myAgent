@@ -40,6 +40,8 @@ _KIND_MAP = {
     "eval_task_complete": "eval.task_complete",
     "eval_run_complete": "eval.run.complete",
     "eval_run_error": "eval.run.error",
+    "token_usage": "token.usage",
+    "trace.span": "trace.span",
 }
 
 

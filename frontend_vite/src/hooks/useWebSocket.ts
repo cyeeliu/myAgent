@@ -30,6 +30,7 @@ import {
   WsEvent,
 } from '../types';
 import { useChatStore, useTodoStore, useSessionStore, useHarnessStore, useEvalStore } from '../stores';
+import { useChatObservabilityStore } from '../stores/chatObservabilityStore';
 import type { TeamTask, TeamTaskStatus } from '../stores/sessionStore';
 import { webClient } from '../services/webClient';
 import {
@@ -1595,6 +1596,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }),
       webClient.on('chat.final', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
+        useChatObservabilityStore.getState().incrementTurn();
 
         const currentMode = useSessionStore.getState().mode;
         const content = normalizeFinalContent(payload);
@@ -2737,6 +2739,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }),
       webClient.on('eval.run.error', ({ payload }) => {
         useEvalStore.getState().onEvalRunError(payload as any);
+      }),
+      // ── Chat observability events ──
+      webClient.on('token.usage', ({ payload }) => {
+        useChatObservabilityStore.getState().onTokenUsage(payload as any);
+      }),
+      webClient.on('trace.span', ({ payload }) => {
+        useChatObservabilityStore.getState().onSpanEvent(payload as any);
+      }),
+      webClient.on('chat.compacted', ({ payload }) => {
+        useChatObservabilityStore.getState().onCompaction((payload as any)?.reason || 'unknown');
+      }),
+      webClient.on('chat.memory', ({ payload }) => {
+        useChatObservabilityStore.getState().onMemory((payload as any)?.extracted || '');
+      }),
+      webClient.on('context.usage', ({ payload }) => {
+        useChatObservabilityStore.getState().onContextUsage(payload as any);
       }),
     ];
 

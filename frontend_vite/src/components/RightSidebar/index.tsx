@@ -3,9 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { FileViewer } from '../AgentPanel/FileViewer';
 import { FileTreeTab } from './FileTreeTab';
 import { TerminalTab } from './TerminalTab';
+import { ChatObservabilityPanel } from '../ChatObservabilityPanel';
 import './RightSidebar.css';
 
-type SidebarTab = 'files' | 'editor' | 'terminal';
+type SidebarTab = 'files' | 'editor' | 'terminal' | 'obs';
 
 interface RightSidebarProps {
   width: number;
@@ -103,6 +104,15 @@ export function RightSidebar({ width, onResize }: RightSidebarProps) {
               </svg>
               {t('rightSidebar.tabTerminal')}
             </button>
+            <button
+              className={`right-sidebar__tab ${activeTab === 'obs' ? 'right-sidebar__tab--active' : ''}`}
+              onClick={() => setActiveTab('obs')}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l3-3 3 3 3-6 3 6 3-3 3 3" />
+              </svg>
+              {t('rightSidebar.tabObs', '观测')}
+            </button>
           </div>
           <div className="right-sidebar__actions">
             {activeTab === 'editor' && (
@@ -139,6 +149,9 @@ export function RightSidebar({ width, onResize }: RightSidebarProps) {
           )}
           {activeTab === 'terminal' && (
             <TerminalTab />
+          )}
+          {activeTab === 'obs' && (
+            <ChatObservabilityPanel />
           )}
         </div>
       </div>

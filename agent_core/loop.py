@@ -92,6 +92,8 @@ def agent_loop(session: Session):
         if session.interrupted:
             session.emit("done", {"reason": "interrupted"})
             _tracer.end_span(_turn_span, status="cancelled")
+            session.emit("trace.span", {"event": "end", "span_id": _turn_span.id,
+                                        "name": "agent_turn", "duration_ms": _turn_span.duration_ms})
             return
         fired = consume_cron_queue()
         for job in fired:
@@ -127,7 +129,18 @@ def agent_loop(session: Session):
             }, parent_id=_turn_span.id)
             response = call_llm(messages, context, tools, state, max_tokens,
                                 events=session, stream=session.streaming)
-            _tracer.end_span(_llm_span)
+            _llm_attrs = {}
+            _usage = getattr(response, "usage", None)
+            if _usage and isinstance(_usage, dict):
+                _llm_attrs["tokens_in"] = _usage.get("prompt_tokens", 0)
+                _llm_attrs["tokens_out"] = _usage.get("completion_tokens", 0)
+            _tracer.end_span(_llm_span, attributes=_llm_attrs or None)
+            session.emit("trace.span", {
+                "event": "end", "span_id": _llm_span.id, "name": "llm_call",
+                "duration_ms": _llm_span.duration_ms,
+                "tokens_in": _llm_attrs.get("tokens_in", 0),
+                "tokens_out": _llm_attrs.get("tokens_out", 0),
+            })
         except Exception as e:
             _tracer.end_span(_llm_span, status="error", error=str(e))
             if is_prompt_too_long_error(e) and not state.has_attempted_reactive_compact:
@@ -209,6 +222,8 @@ def agent_loop(session: Session):
             threading.Thread(target=_memory_background, daemon=True).start()
             session.emit("done", {})
             _tracer.end_span(_turn_span)
+            session.emit("trace.span", {"event": "end", "span_id": _turn_span.id,
+                                        "name": "agent_turn", "duration_ms": _turn_span.duration_ms})
             return
 
         results = []
@@ -302,6 +317,11 @@ def agent_loop(session: Session):
                     }, parent_id=_turn_span.id)
                     output = call_tool_handler(handler, blk.input, blk.name)
                     _tracer.end_span(_tool_span)
+                    session.emit("trace.span", {
+                        "event": "end", "span_id": _tool_span.id,
+                        "name": "tool_call", "tool": blk.name,
+                        "duration_ms": _tool_span.duration_ms,
+                    })
                     trigger_hooks("PostToolUse", blk, output)
                     session.emit("tool_result", {"id": blk.id, "content": output})
                     _exec_outputs[idx] = output
@@ -310,14 +330,27 @@ def agent_loop(session: Session):
                     with concurrent.futures.ThreadPoolExecutor(
                             max_workers=min(4, len(batch))) as pool:
                         fut_map = {}
+                        _batch_spans = {}
                         for idx, blk in batch:
                             handler = handlers.get(blk.name)
+                            _bs = _tracer.start_span("tool_call", {
+                                "tool": blk.name, "readonly": True,
+                            }, parent_id=_turn_span.id)
+                            _batch_spans[idx] = _bs
                             fut = pool.submit(call_tool_handler,
                                               handler, blk.input, blk.name)
                             fut_map[fut] = (idx, blk)
                         for fut in concurrent.futures.as_completed(fut_map):
                             idx, blk = fut_map[fut]
                             output = fut.result()
+                            _bs = _batch_spans.get(idx)
+                            if _bs:
+                                _tracer.end_span(_bs)
+                                session.emit("trace.span", {
+                                    "event": "end", "span_id": _bs.id,
+                                    "name": "tool_call", "tool": blk.name,
+                                    "duration_ms": _bs.duration_ms,
+                                })
                             trigger_hooks("PostToolUse", blk, output)
                             session.emit("tool_result",
                                          {"id": blk.id, "content": output})
@@ -333,6 +366,11 @@ def agent_loop(session: Session):
                 handler = handlers.get(block.name)
                 output = call_tool_handler(handler, block.input, block.name)
                 _tracer.end_span(_tool_span)
+                session.emit("trace.span", {
+                    "event": "end", "span_id": _tool_span.id,
+                    "name": "tool_call", "tool": block.name,
+                    "duration_ms": _tool_span.duration_ms,
+                })
                 trigger_hooks("PostToolUse", block, output)
                 session.emit("tool_result", {"id": block.id, "content": output})
 

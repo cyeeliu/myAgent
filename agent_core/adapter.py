@@ -176,20 +176,32 @@ def chat_create(model, system=None, messages=None, tools=None,
                 args = {}
             blocks.append(_ToolUseBlock(id=tc.id, name=tc.function.name, input=args))
         stop_map = {"tool_calls": "tool_use", "length": "max_tokens", "stop": "end_turn"}
+        _ns_usage = None
+        if getattr(resp, "usage", None):
+            _ns_usage = {
+                "prompt_tokens": getattr(resp.usage, "prompt_tokens", 0) or 0,
+                "completion_tokens": getattr(resp.usage, "completion_tokens", 0) or 0,
+                "total_tokens": getattr(resp.usage, "total_tokens", 0) or 0,
+            }
+            if events is not None:
+                events.emit("token_usage", _ns_usage)
         return SimpleNamespace(
             content=blocks,
             stop_reason=stop_map.get(choice.finish_reason, choice.finish_reason),
             interrupted=bool(events is not None and getattr(events, "interrupted", False)),
+            usage=_ns_usage,
         )
 
     # Streaming path: emit token deltas, reassemble text + tool_calls.
     # Check `events.interrupted` between chunks so a client Interrupt stops the
     # stream mid-response instead of waiting for the model to finish the turn.
     kwargs["stream"] = True
+    kwargs["stream_options"] = {"include_usage": True}
     text_parts: list[str] = []
     tool_calls: dict[int, dict] = {}
     finish_reason = None
     interrupted = False
+    _usage = None
     _t0 = _time.monotonic()
     _chunk_no = 0
     # Context-window usage base (input context size, in tokens) for live stat
@@ -216,6 +228,8 @@ def chat_create(model, system=None, messages=None, tools=None,
             interrupted = True
             break
         _chunk_no += 1
+        if getattr(chunk, "usage", None):
+            _usage = chunk.usage
         if not chunk.choices:
             if _ADBG:
                 _adbg("chunk #%d t=%.3f no-choices", _chunk_no, _time.monotonic() - _t0)
@@ -288,6 +302,17 @@ def chat_create(model, system=None, messages=None, tools=None,
                     {"tokens_used": _used, "context_max": _ctx_max,
                      "rate": round(_rate, 1)})
 
+    # Emit real token usage from API response (if available).
+    _real_usage = None
+    if _usage is not None:
+        _real_usage = {
+            "prompt_tokens": getattr(_usage, "prompt_tokens", 0) or 0,
+            "completion_tokens": getattr(_usage, "completion_tokens", 0) or 0,
+            "total_tokens": getattr(_usage, "total_tokens", 0) or 0,
+        }
+        if events is not None:
+            events.emit("token_usage", _real_usage)
+
     blocks = []
     if text_parts:
         blocks.append(_TextBlock("".join(text_parts)))
@@ -303,4 +328,5 @@ def chat_create(model, system=None, messages=None, tools=None,
         content=blocks,
         stop_reason=stop_map.get(finish_reason, finish_reason),
         interrupted=False,
+        usage=_real_usage,
     )
