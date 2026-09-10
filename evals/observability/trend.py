@@ -77,6 +77,9 @@ class TrendService:
 
     def _list_runs(self, rm) -> list[str]:
         try:
+            store = self.ctx.result_store
+            if store is not None:
+                return store.list_runs()
             from evals.storage.results import ResultStore
             return ResultStore().list_runs()
         except Exception:

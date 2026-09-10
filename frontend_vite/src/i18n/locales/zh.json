@@ -1834,7 +1834,15 @@
     "taskTrace": "任务追踪",
     "selectRunPrompt": "从左侧选择一个评测运行查看结果",
     "compare": "对比",
-    "trend": "趋势"
+    "trend": "趋势",
+    "observability": "可观测性",
+    "obsLive": "存活",
+    "obsReady": "就绪",
+    "obsDashboard": "实时仪表盘",
+    "obsMetrics": "指标快照",
+    "obsAlerts": "告警",
+    "obsNoActiveRuns": "无活跃运行",
+    "obsNoAlerts": "无告警"
   },
   "rightSidebar": {
     "open": "打开侧边栏",

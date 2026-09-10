@@ -1832,7 +1832,15 @@
     "taskTrace": "Task Trace",
     "selectRunPrompt": "Select a run from the left to view results",
     "compare": "Compare",
-    "trend": "Trend"
+    "trend": "Trend",
+    "observability": "Observability",
+    "obsLive": "Live",
+    "obsReady": "Ready",
+    "obsDashboard": "Dashboard",
+    "obsMetrics": "Metrics",
+    "obsAlerts": "Alerts",
+    "obsNoActiveRuns": "No active runs",
+    "obsNoAlerts": "No alerts"
   },
   "rightSidebar": {
     "open": "Open sidebar",

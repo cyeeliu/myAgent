@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useEvalStore } from '../../stores/evalStore';
+import { useObservabilityStore } from '../../stores/observabilityStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { webClient } from '../../services/webClient';
 import './EvalsPanel.css';
@@ -8,11 +9,13 @@ import './EvalsPanel.css';
 export function EvalsPanel() {
   const { t } = useTranslation();
   const evalStore = useEvalStore();
+  const obsStore = useObservabilityStore();
   const { availableModels, selectedModelName } = useSessionStore();
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [traceTaskId, setTraceTaskId] = useState<string | null>(null);
   const [traceData, setTraceData] = useState<string>('');
   const [wsReady, setWsReady] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<'eval' | 'obs'>('eval');
 
   // Subscribe to WS connection state — retry loadDatasets/loadRuns when ready
   useEffect(() => {
@@ -83,6 +86,19 @@ export function EvalsPanel() {
     })();
     return () => { cancelled = true; };
   }, [traceTaskId, selectedRunId, report]);
+
+  // Observability auto-refresh
+  const obsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    if (activeTab !== 'obs') return;
+    void obsStore.loadAll();
+    if (obsStore.autoRefresh) {
+      obsTimerRef.current = setInterval(() => void obsStore.loadAll(), obsStore.refreshInterval);
+    }
+    return () => {
+      if (obsTimerRef.current) clearInterval(obsTimerRef.current);
+    };
+  }, [activeTab, obsStore.autoRefresh, obsStore.refreshInterval]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="evals-panel">
@@ -158,12 +174,139 @@ export function EvalsPanel() {
         </button>
       </div>
 
+      {/* Tab Switcher */}
+      <div className="evals-tabs">
+        <button
+          className={`evals-tab ${activeTab === 'eval' ? 'evals-tab--active' : ''}`}
+          onClick={() => setActiveTab('eval')}
+        >
+          {t('evals.evals', '评测')}
+        </button>
+        <button
+          className={`evals-tab ${activeTab === 'obs' ? 'evals-tab--active' : ''}`}
+          onClick={() => setActiveTab('obs')}
+        >
+          {t('evals.observability', '可观测性')}
+        </button>
+      </div>
+
       {/* Error */}
       {evalStore.error && (
         <div className="evals-error">{evalStore.error}</div>
       )}
+      {activeTab === 'obs' && obsStore.error && (
+        <div className="evals-error">{obsStore.error}</div>
+      )}
 
-      {/* Body */}
+      {/* Observability Tab */}
+      {activeTab === 'obs' ? (
+        <div className="evals-obs">
+          {/* Health Status */}
+          <div className="evals-obs__health">
+            <span className={`evals-obs__badge evals-obs__badge--${obsStore.health.live === 'ok' ? 'ok' : 'err'}`}>
+              {t('evals.obsLive', '存活')}: {obsStore.health.live}
+            </span>
+            <span className={`evals-obs__badge evals-obs__badge--${obsStore.health.ready === 'ready' ? 'ok' : 'err'}`}>
+              {t('evals.obsReady', '就绪')}: {obsStore.health.ready}
+            </span>
+            <button
+              className="evals-toolbar__btn evals-toolbar__btn--ghost"
+              style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }}
+              onClick={() => obsStore.setAutoRefresh(!obsStore.autoRefresh)}
+            >
+              {obsStore.autoRefresh ? '⏸ Auto' : '▶ Auto'}
+            </button>
+          </div>
+
+          {/* Active Runs Dashboard */}
+          <div className="evals-card">
+            <div className="evals-card__title">{t('evals.obsDashboard', '实时仪表盘')}</div>
+            {obsStore.dashboard?.runs?.length ? (
+              <div className="evals-obs__runs">
+                {obsStore.dashboard.runs.map((run) => (
+                  <div key={run.run_id} className="evals-obs__run">
+                    <div className="evals-obs__run-header">
+                      <span style={{ fontWeight: 600 }}>{run.dataset}</span>
+                      <span style={{ color: 'var(--muted)' }}>{run.model}</span>
+                      <span className={`evals-history__status evals-history__status--${run.status}`}>{run.status}</span>
+                    </div>
+                    <div className="evals-obs__run-progress">
+                      <div className="evals-scorecard__bar">
+                        <div
+                          className="evals-scorecard__bar-fill"
+                          style={{ width: `${run.total_tasks > 0 ? (run.completed_tasks / run.total_tasks) * 100 : 0}%` }}
+                        />
+                      </div>
+                      <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+                        {run.completed_tasks}/{run.total_tasks}
+                        {run.estimated_remaining_ms != null && ` · ETA ${Math.ceil(run.estimated_remaining_ms / 1000)}s`}
+                        {run.current_task_id && ` · ${run.current_task_id}`}
+                      </span>
+                    </div>
+                    {run.live_scorecard && Object.keys(run.live_scorecard).length > 0 && (
+                      <div className="evals-obs__run-scorecard">
+                        {Object.entries(run.live_scorecard).slice(0, 4).map(([k, v]) => (
+                          <span key={k} style={{ marginRight: 8, fontSize: 11 }}>
+                            {k}={typeof v === 'number' ? v.toFixed(2) : v}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="evals-empty">{t('evals.obsNoActiveRuns', '无活跃运行')}</div>
+            )}
+          </div>
+
+          {/* Metrics Snapshot */}
+          <div className="evals-card">
+            <div className="evals-card__title">{t('evals.obsMetrics', '指标快照')}</div>
+            {obsStore.metrics && Object.keys(obsStore.metrics).length > 0 ? (
+              <div className="evals-obs__metrics">
+                {Object.entries(obsStore.metrics).map(([name, info]) => (
+                  <div key={name} className="evals-obs__metric">
+                    <span className="evals-scorecard__label">{name}</span>
+                    <span className="evals-scorecard__value">
+                      {typeof info.value === 'number' ? info.value.toFixed(3) : String(info.value)}
+                    </span>
+                    <span style={{ fontSize: 10, color: 'var(--muted)' }}>{info.direction}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="evals-empty">—</div>
+            )}
+          </div>
+
+          {/* Alerts */}
+          <div className="evals-card">
+            <div className="evals-card__title">{t('evals.obsAlerts', '告警')} ({obsStore.alerts.length})</div>
+            {obsStore.alerts.length > 0 ? (
+              <div className="evals-obs__alerts">
+                {obsStore.alerts.map((alert, i) => (
+                  <div key={i} className={`evals-obs__alert evals-obs__alert--${alert.severity}`}>
+                    <span className={`evals-obs__badge evals-obs__badge--${alert.severity === 'critical' ? 'err' : alert.severity === 'warning' ? 'warn' : 'ok'}`}>
+                      {alert.severity}
+                    </span>
+                    <span style={{ fontWeight: 600 }}>{alert.rule_name}</span>
+                    <span style={{ color: 'var(--muted)' }}>
+                      {alert.metric}={alert.current_value.toFixed(2)} {alert.state}
+                    </span>
+                    <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>
+                      {new Date(alert.triggered_at * 1000).toLocaleTimeString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="evals-empty">{t('evals.obsNoAlerts', '无告警')}</div>
+            )}
+          </div>
+        </div>
+      ) : (
+      /* Body */
       <div className="evals-body">
         {/* Left: Run History */}
         <div className="evals-left">
@@ -311,6 +454,7 @@ export function EvalsPanel() {
           )}
         </div>
       </div>
+      )}
 
       {/* Trace Drawer */}
       {traceTaskId && report && (

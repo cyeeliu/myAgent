@@ -131,6 +131,7 @@ class FileAndStdoutHandler(logging.Handler):
                 log_dir = config.EVAL_LOG_DIR / run_id / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
                 self._file = logging.FileHandler(str(log_dir / "eval.log"), encoding="utf-8")
+                self._file.setFormatter(JsonLogFormatter())
                 self._degraded = False
             except Exception:
                 self._file = None
