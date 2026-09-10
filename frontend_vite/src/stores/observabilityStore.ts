@@ -41,8 +41,8 @@ interface AlertEvent {
 interface TrendPoint {
   run_id: string;
   timestamp: number;
-  [metric: string]: number | string;
   changes: Record<string, string>;
+  [metric: string]: number | string | Record<string, string>;
 }
 
 interface HealthStatus {
