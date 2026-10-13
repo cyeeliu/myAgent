@@ -88,6 +88,24 @@ class EvalRunManager:
             except Exception:
                 pass
 
+    def _evaluate_alerts(self, run_id: str, scorecard: dict):
+        """Build a metric snapshot from the scorecard and run alert rules."""
+        try:
+            from evals.observability.alerts import evaluate_snapshot
+            snapshot: dict[str, dict] = {}
+            for name, val in scorecard.items():
+                if name.startswith("_"):
+                    continue
+                numeric = val
+                if isinstance(val, dict):
+                    numeric = val.get("mean", 0.0)
+                if isinstance(numeric, (int, float)):
+                    snapshot[name] = {"value": numeric}
+            if snapshot:
+                evaluate_snapshot(snapshot, run_id)
+        except Exception:
+            pass
+
     def start(
         self,
         dataset: str,
@@ -166,6 +184,15 @@ class EvalRunManager:
                         "rep": event.get("rep", 0),
                     }
                 self._emit(handle.run_id, "eval_progress", {"run_id": handle.run_id, **event})
+                if event.get("status") in ("ok", "error", "timeout", "skipped"):
+                    self._emit(handle.run_id, "eval_task_complete", {
+                        "run_id": handle.run_id,
+                        "task_id": event.get("task_id", ""),
+                        "rep": event.get("rep", 0),
+                        "status": event.get("status", ""),
+                        "scores": event.get("judge", {}),
+                        "metrics": event.get("metrics", {}),
+                    })
 
             # Run
             runner = EvalRunner()
@@ -204,6 +231,8 @@ class EvalRunManager:
                 "duration_s": handle.finished_at - handle.started_at,
                 "total_tasks": report.get("total_tasks", 0),
             })
+
+            self._evaluate_alerts(handle.run_id, handle.scorecard)
 
         except Exception as e:
             handle.status = "error"

@@ -469,3 +469,13 @@
 }
 .evals-obs__alert--critical { border-color: #ef4444; background: #fef2f2; }
 .evals-obs__alert--warning { border-color: #f59e0b; background: #fffbeb; }
+
+.evals-obs__trend { display: flex; flex-direction: column; gap: 4px; }
+.evals-obs__trend-point {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 4px;
+}

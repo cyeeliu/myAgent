@@ -163,6 +163,8 @@ class EvalRunner:
                             "rep": result.rep,
                             "status": result.status,
                             "error": result.error,
+                            "metrics": result.metrics,
+                            "judge": result.judge,
                         }
                         on_progress(progress_event)
                         if _eval_logger is not None:
@@ -269,8 +271,10 @@ class EvalRunner:
         # Online or mock mode
         try:
             ws = self.workspace.isolate(task, run_id)
+            _span_start = time.time()
             trace = self._drive_agent(task, ws, model, mode, max_seconds,
                                       cancel_event=cancel_event)
+            self._register_root_span(run_id, task_id, _span_start)
             result = self._score(trace, task, rep, run_id)
             if _eval_logger is not None:
                 _eval_logger.emit("INFO", "task_completed", f"task completed: {task_id}",
@@ -502,3 +506,16 @@ class EvalRunner:
         model = os.environ.get("MODEL_ID", "model")
         ts = time.strftime("%Y%m%d_%H%M%S")
         return f"{sha}_{name}_{model}_{ts}"
+
+    def _register_root_span(self, run_id: str, task_id: str, since: float):
+        """Register the root agent_turn span with SpanIndex for trace viz."""
+        try:
+            from agent_core.tracing import tracer
+            from evals.observability.trace_viz import get_span_index
+            spans = tracer.get_recent_spans(limit=200)
+            for s in reversed(spans):
+                if s.get("name") == "agent_turn" and s.get("start_time", 0) >= since:
+                    get_span_index().register(run_id, task_id, s["id"])
+                    return
+        except Exception:
+            pass

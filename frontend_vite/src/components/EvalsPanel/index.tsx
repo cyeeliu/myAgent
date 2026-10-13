@@ -16,6 +16,10 @@ export function EvalsPanel() {
   const [traceData, setTraceData] = useState<string>('');
   const [wsReady, setWsReady] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'eval' | 'obs'>('eval');
+  const [trendDataset, setTrendDataset] = useState<string>('');
+  const [trendMetric, setTrendMetric] = useState<string>('pass_rate');
+  const [compareMode, setCompareMode] = useState<boolean>(false);
+  const [compareSelection, setCompareSelection] = useState<Set<string>>(new Set());
 
   // Subscribe to WS connection state — retry loadDatasets/loadRuns when ready
   useEffect(() => {
@@ -87,18 +91,37 @@ export function EvalsPanel() {
     return () => { cancelled = true; };
   }, [traceTaskId, selectedRunId, report]);
 
-  // Observability auto-refresh
+  // Observability auto-refresh + SSE subscription
   const obsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (activeTab !== 'obs') return;
     void obsStore.loadAll();
+    // SSE subscription for real-time updates when there's an active run
+    const activeRun = evalStore.activeRunId;
+    if (activeRun && evalStore.status === 'running') {
+      obsStore.subscribeSSE(activeRun);
+    }
     if (obsStore.autoRefresh) {
       obsTimerRef.current = setInterval(() => void obsStore.loadAll(), obsStore.refreshInterval);
     }
     return () => {
       if (obsTimerRef.current) clearInterval(obsTimerRef.current);
+      obsStore.unsubscribeSSE();
     };
-  }, [activeTab, obsStore.autoRefresh, obsStore.refreshInterval]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeTab, obsStore.autoRefresh, obsStore.refreshInterval, evalStore.activeRunId, evalStore.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load trend data when dataset/metric changes
+  useEffect(() => {
+    if (activeTab !== 'obs' || !trendDataset) return;
+    void obsStore.loadTrend(trendDataset, trendMetric);
+  }, [activeTab, trendDataset, trendMetric]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-set trend dataset from eval store
+  useEffect(() => {
+    if (!trendDataset && evalStore.selectedDataset) {
+      setTrendDataset(evalStore.selectedDataset);
+    }
+  }, [evalStore.selectedDataset, trendDataset]);
 
   return (
     <div className="evals-panel">
@@ -172,6 +195,18 @@ export function EvalsPanel() {
         <button className="evals-toolbar__btn evals-toolbar__btn--ghost" onClick={() => void evalStore.loadRuns()}>
           {t('common.refresh')}
         </button>
+
+        <button
+          className={`evals-toolbar__btn ${compareMode ? 'evals-toolbar__btn--cancel' : 'evals-toolbar__btn--ghost'}`}
+          onClick={() => { setCompareMode(!compareMode); setCompareSelection(new Set()); }}
+        >
+          {compareMode ? t('evals.exitCompare', '退出比较') : t('evals.compare', '比较')}
+        </button>
+        {compareMode && compareSelection.size >= 2 && (
+          <button className="evals-toolbar__btn evals-toolbar__btn--run" onClick={() => void evalStore.compareRuns([...compareSelection])}>
+            {t('evals.runCompare', '运行比较')} ({compareSelection.size})
+          </button>
+        )}
       </div>
 
       {/* Tab Switcher */}
@@ -209,6 +244,9 @@ export function EvalsPanel() {
             <span className={`evals-obs__badge evals-obs__badge--${obsStore.health.ready === 'ready' ? 'ok' : 'err'}`}>
               {t('evals.obsReady', '就绪')}: {obsStore.health.ready}
             </span>
+            {obsStore.sseConnected && (
+              <span className="evals-obs__badge evals-obs__badge--ok">SSE</span>
+            )}
             <button
               className="evals-toolbar__btn evals-toolbar__btn--ghost"
               style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }}
@@ -304,6 +342,53 @@ export function EvalsPanel() {
               <div className="evals-empty">{t('evals.obsNoAlerts', '无告警')}</div>
             )}
           </div>
+
+          {/* Trend */}
+          <div className="evals-card">
+            <div className="evals-card__title">{t('evals.obsTrend', '趋势')}</div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <select className="evals-toolbar__select" value={trendDataset} onChange={(e) => setTrendDataset(e.target.value)} style={{ flex: 1 }}>
+                {evalStore.datasets.map((d) => (
+                  <option key={d.name} value={d.name}>{d.name}</option>
+                ))}
+              </select>
+              <select className="evals-toolbar__select" value={trendMetric} onChange={(e) => setTrendMetric(e.target.value)} style={{ flex: 1 }}>
+                <option value="pass_rate">pass_rate</option>
+                <option value="tool_success_rate">tool_success_rate</option>
+                <option value="mean_turns">mean_turns</option>
+                <option value="mean_tool_calls">mean_tool_calls</option>
+                <option value="error_rate">error_rate</option>
+              </select>
+            </div>
+            {obsStore.trend.length > 0 ? (
+              <div className="evals-obs__trend">
+                {obsStore.trend.map((point) => {
+                  const val = point[trendMetric] ?? point.value;
+                  const change = point.changes?.[trendMetric];
+                  return (
+                    <div key={point.run_id} className="evals-obs__trend-point">
+                      <span style={{ fontSize: 10, color: 'var(--muted)' }}>
+                        {point.timestamp > 0 ? new Date(point.timestamp * 1000).toLocaleDateString() : '—'}
+                      </span>
+                      <span style={{ fontWeight: 600 }}>
+                        {typeof val === 'number' ? val.toFixed(3) : '—'}
+                      </span>
+                      {change && (
+                        <span className={`evals-obs__badge evals-obs__badge--${change === 'improved' ? 'ok' : change === 'degraded' ? 'err' : 'warn'}`} style={{ fontSize: 9 }}>
+                          {change}
+                        </span>
+                      )}
+                      <span style={{ fontSize: 9, color: 'var(--muted)', marginLeft: 'auto' }}>
+                        {point.run_id.slice(-12)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="evals-empty">{t('evals.obsNoTrend', '无趋势数据')}</div>
+            )}
+          </div>
         </div>
       ) : (
       /* Body */
@@ -319,8 +404,19 @@ export function EvalsPanel() {
                 {evalStore.runs.map((run) => (
                   <div
                     key={run.run_id}
-                    className={`evals-history__item ${selectedRunId === run.run_id ? 'evals-history__item--active' : ''}`}
-                    onClick={() => void handleSelectRun(run.run_id)}
+                    className={`evals-history__item ${compareMode ? (compareSelection.has(run.run_id) ? 'evals-history__item--active' : '') : (selectedRunId === run.run_id ? 'evals-history__item--active' : '')}`}
+                    onClick={() => {
+                      if (compareMode) {
+                        setCompareSelection((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(run.run_id)) next.delete(run.run_id);
+                          else next.add(run.run_id);
+                          return next;
+                        });
+                      } else {
+                        void handleSelectRun(run.run_id);
+                      }
+                    }}
                   >
                     <div className="evals-history__meta">
                       <span className="evals-history__id">{run.dataset}</span>
@@ -363,7 +459,41 @@ export function EvalsPanel() {
 
         {/* Right: Scorecard + Task Results */}
         <div className="evals-right">
-          {evalStore.loading ? (
+          {evalStore.compareResult ? (
+            <div className="evals-card">
+              <div className="evals-card__title">{t('evals.compareResult', '比较结果')}</div>
+              <table className="evals-task-table">
+                <thead>
+                  <tr>
+                    <th>Run</th>
+                    {evalStore.compareResult && Object.keys(Object.values(evalStore.compareResult)[0]?.scorecard || {}).slice(0, 6).map((k) => (
+                      <th key={k}>{k}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(evalStore.compareResult).map(([rid, data]) => (
+                    <tr key={rid}>
+                      <td style={{ fontSize: 10 }}>{rid.slice(-20)}</td>
+                      {Object.entries(data.scorecard || {}).slice(0, 6).map(([k, v]) => {
+                        const numVal = typeof v === 'object' && v !== null && 'mean' in v ? (v as { mean: number }).mean : typeof v === 'number' ? v : parseFloat(String(v));
+                        return (
+                          <td key={k}>{typeof numVal === 'number' && !isNaN(numVal) ? numVal.toFixed(3) : String(v)}</td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button
+                className="evals-toolbar__btn evals-toolbar__btn--ghost"
+                style={{ marginTop: 8 }}
+                onClick={() => evalStore.clearCompare()}
+              >
+                {t('common.close', '关闭')}
+              </button>
+            </div>
+          ) : evalStore.loading ? (
             <div className="evals-empty">{t('common.loading')}</div>
           ) : report ? (
             <>

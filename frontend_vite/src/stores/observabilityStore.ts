@@ -62,6 +62,7 @@ interface ObservabilityState {
   error: string | null;
   autoRefresh: boolean;
   refreshInterval: number;
+  sseConnected: boolean;
 
   loadDashboard: () => Promise<void>;
   loadMetrics: (runId?: string) => Promise<void>;
@@ -71,9 +72,13 @@ interface ObservabilityState {
   loadAll: () => Promise<void>;
   setAutoRefresh: (enabled: boolean) => void;
   clearError: () => void;
+  subscribeSSE: (runId: string) => void;
+  unsubscribeSSE: () => void;
 }
 
 const API_BASE = '/eval/obs';
+
+let _sseSource: EventSource | null = null;
 
 async function fetchJSON<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -91,6 +96,7 @@ export const useObservabilityStore = create<ObservabilityState>((set, get) => ({
   error: null,
   autoRefresh: true,
   refreshInterval: 3000,
+  sseConnected: false,
 
   loadDashboard: async () => {
     try {
@@ -167,4 +173,29 @@ export const useObservabilityStore = create<ObservabilityState>((set, get) => ({
 
   setAutoRefresh: (enabled: boolean) => set({ autoRefresh: enabled }),
   clearError: () => set({ error: null }),
+
+  subscribeSSE: (runId: string) => {
+    get().unsubscribeSSE();
+    try {
+      const es = new EventSource(`${API_BASE}/events?run_id=${encodeURIComponent(runId)}`);
+      _sseSource = es;
+      es.onopen = () => set({ sseConnected: true });
+      es.onerror = () => set({ sseConnected: false });
+      es.addEventListener('run_completed', () => { void get().loadAll(); });
+      es.addEventListener('run_cancelled', () => { void get().loadAll(); });
+      es.addEventListener('task_completed', () => { void get().loadDashboard(); });
+      es.addEventListener('task_failed', () => { void get().loadDashboard(); });
+      es.addEventListener('progress', () => { void get().loadDashboard(); });
+    } catch {
+      set({ sseConnected: false });
+    }
+  },
+
+  unsubscribeSSE: () => {
+    if (_sseSource) {
+      _sseSource.close();
+      _sseSource = null;
+    }
+    set({ sseConnected: false });
+  },
 }));

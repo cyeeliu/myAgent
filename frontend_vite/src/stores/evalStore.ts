@@ -74,6 +74,7 @@ interface EvalState {
   activeRunId: string | null;
   progress: Record<string, TaskProgress>;
   report: EvalReport | null;
+  compareResult: Record<string, { scorecard: Record<string, number>; per_task: Array<{ task_id: string; scores: Record<string, unknown> }> }> | null;
   status: 'idle' | 'running' | 'complete' | 'error';
   error: string | null;
   loading: boolean;
@@ -91,6 +92,8 @@ interface EvalState {
   cancelRun: () => Promise<void>;
   loadRun: (runId: string) => Promise<void>;
   deleteRun: (runId: string) => Promise<void>;
+  compareRuns: (runIds: string[]) => Promise<void>;
+  clearCompare: () => void;
   setSelectedDataset: (d: string) => void;
   setSelectedModel: (m: string) => void;
   setSelectedMode: (m: string) => void;
@@ -109,6 +112,7 @@ export const useEvalStore = create<EvalState>((set, get) => ({
   activeRunId: null,
   progress: {},
   report: null,
+  compareResult: null,
   status: 'idle',
   error: null,
   loading: false,
@@ -199,6 +203,21 @@ export const useEvalStore = create<EvalState>((set, get) => ({
     }
   },
 
+  compareRuns: async (runIds: string[]) => {
+    if (runIds.length < 2) return;
+    set({ loading: true });
+    try {
+      const data = await webRequest<Record<string, { scorecard: Record<string, number>; per_task: Array<{ task_id: string; scores: Record<string, unknown> }> }>>('eval.compare', { run_ids: runIds });
+      set({ compareResult: data });
+    } catch {
+      // ignore
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  clearCompare: () => set({ compareResult: null }),
+
   setSelectedDataset: (d) => set({ selectedDataset: d }),
   setSelectedModel: (m) => set({ selectedModel: m }),
   setSelectedMode: (m) => set({ selectedMode: m }),
@@ -212,8 +231,18 @@ export const useEvalStore = create<EvalState>((set, get) => ({
     }));
   },
 
-  onEvalTaskComplete: (_p) => {
-    // Task completion — progress already tracked; full results come with run.complete
+  onEvalTaskComplete: (p) => {
+    if (p.run_id !== get().activeRunId) return;
+    set((state) => ({
+      progress: {
+        ...state.progress,
+        [p.task_id]: {
+          ...state.progress[p.task_id],
+          task_id: p.task_id,
+          status: p.status || 'ok',
+        },
+      },
+    }));
   },
 
   onEvalRunComplete: (p) => {
