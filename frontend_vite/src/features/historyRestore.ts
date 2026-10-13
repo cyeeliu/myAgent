@@ -18,7 +18,8 @@ const ALLOWED_ASSISTANT_EVENT_TYPES = new Set([
   'team.task',
   'harness.message',
   'harness.stage_result',
-  'harness.extension_ready'
+  'harness.extension_ready',
+  'todo.updated',
 ]);
 
 /** 后端约定：最后一帧 `history.message` 使用 `payload.status: done`（兼容旧版 `payload.content: done`） */
@@ -51,6 +52,10 @@ export interface HistoryTeamReplayItem {
   };
 }
 
+export interface HistoryTodoReplayItem {
+  todos: unknown[];
+}
+
 type HistoryTimelineEntry =
   | { kind: 'message'; message: Message }
   | { kind: 'tool_call'; at: string; payload: Record<string, unknown> }
@@ -60,7 +65,8 @@ type HistoryTimelineEntry =
   | { kind: 'team_member'; at: string; payload: { event: Record<string, unknown> } }
   | { kind: 'team_task'; at: string; payload: { event: Record<string, unknown> } }
   | { kind: 'harness_message'; at: string; content: string; stage?: string }
-  | { kind: 'harness_stage_result'; at: string; stage: string; status: string; error: string; messages: string[]; metrics: Record<string, unknown> };
+  | { kind: 'harness_stage_result'; at: string; stage: string; status: string; error: string; messages: string[]; metrics: Record<string, unknown> }
+  | { kind: 'todo_replay'; todos: unknown[] };
 
 interface BeginHistoryRestoreOptions {
   sessionId: string;
@@ -71,6 +77,8 @@ interface BeginHistoryRestoreOptions {
   onHarnessReplay?: (items: HistoryHarnessReplayItem[]) => void;
   /** 与消息同一时间线顺序，用于恢复 Team 成员/任务状态 */
   onTeamReplay?: (items: HistoryTeamReplayItem[]) => void;
+  /** 刷新后从 history 恢复 todo 列表 */
+  onTodoReplay?: (item: HistoryTodoReplayItem) => void;
   /** 无消息且无工具回放时调用；`totalPages` 来自流中最后一帧（若有） */
   onEmpty?: (totalPages: number | null) => void;
   onError?: (message: string) => void;
@@ -420,6 +428,14 @@ function parseHistoryTimelineEntry(
     return { kind: 'harness_stage_result', at, stage, status, error, messages, metrics };
   }
 
+  if (eventType === 'todo.updated') {
+    const todos = Array.isArray(payload.todos) ? payload.todos : [];
+    if (todos.length === 0) {
+      return null;
+    }
+    return { kind: 'todo_replay', todos };
+  }
+
   return null;
 }
 
@@ -550,6 +566,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     const toolReplay: HistoryToolReplayItem[] = [];
     const harnessReplay: HistoryHarnessReplayItem[] = [];
     const teamReplay: HistoryTeamReplayItem[] = [];
+    let todoReplay: HistoryTodoReplayItem | null = null;
     let pendingFileItems: FileDownloadItem[] | null = null;
     for (const e of entries) {
       if (e.kind === 'message') {
@@ -598,6 +615,8 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
         pendingFileItems = e.files;
       } else if (e.kind === 'team_member' || e.kind === 'team_task') {
         teamReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
+      } else if (e.kind === 'todo_replay') {
+        todoReplay = { todos: e.todos };
       } else {
         toolReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
       }
@@ -605,7 +624,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
 
     dispose();
 
-    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0) {
+    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0 && !todoReplay) {
       options.onEmpty?.(totalPages);
       return;
     }
@@ -618,6 +637,9 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     }
     if (teamReplay.length > 0) {
       options.onTeamReplay?.(teamReplay);
+    }
+    if (todoReplay) {
+      options.onTodoReplay?.(todoReplay);
     }
   }
 
@@ -754,6 +776,8 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
         pendingFileItems = e.files;
       } else if (e.kind === 'team_member' || e.kind === 'team_task') {
         teamReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
+      } else if (e.kind === 'todo_replay') {
+        // todo 状态仅在首屏 beginHistoryRestore 恢复，加载更多历史时跳过
       } else {
         toolReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
       }

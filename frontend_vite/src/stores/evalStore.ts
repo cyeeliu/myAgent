@@ -129,7 +129,18 @@ export const useEvalStore = create<EvalState>((set, get) => ({
   loadRuns: async () => {
     try {
       const data = await webRequest<{ runs: RunSummary[] }>('eval.run.list', { offset: 0, limit: 50 });
-      set({ runs: data?.runs || [] });
+      const runs = data?.runs || [];
+      set({ runs });
+      // 刷新后恢复：若 activeRunId 为空且存在 status='running' 的 run，
+      // 自动设为 activeRunId 并标记 status='running'，使后续 eval.progress 事件
+      // 不被 onEvalProgress 的 activeRunId 守卫丢弃。
+      const current = get();
+      if (!current.activeRunId) {
+        const runningRun = runs.find((r) => r.status === 'running');
+        if (runningRun) {
+          set({ activeRunId: runningRun.run_id, status: 'running' });
+        }
+      }
     } catch (e) {
       console.error('[evalStore] loadRuns failed:', e);
     }

@@ -371,6 +371,8 @@ function AppContent() {
   const shareExportTokenRef = useRef(0);
   /** 为 true 表示刚从「会话列表」恢复；history 为空时在 useEffect 的 onEmpty 中提示一次 */
   const historyRestoreFromPanelHintRef = useRef(false);
+  /** 跟踪上一次 history 加载的 sessionId，用于区分「重连」与「切换会话」 */
+  const prevHistorySessionIdRef = useRef<string | null>(null);
 
 
 
@@ -926,6 +928,14 @@ function AppContent() {
     // 仅处理以 sess_ 开头的会话 ID
     if (!sessionId.startsWith('sess_')) return;
 
+    // 重连守卫：若 agent 正在处理中且 sessionId 未变（WS 重连而非切换会话），
+    // 跳过 history 重载以避免 clearMessages() 清空进行中的流式状态。
+    const isReconnect = prevHistorySessionIdRef.current === sessionId;
+    prevHistorySessionIdRef.current = sessionId;
+    if (isReconnect && useChatStore.getState().isProcessing) {
+      return;
+    }
+
     // 新建会话时跳过历史加载
     const isNew = useChatStore.getState().isNewSession;
     if (isNew) {
@@ -1060,6 +1070,13 @@ function AppContent() {
             }
           }
         }
+      },
+      onTodoReplay: (item) => {
+        if (sessionIdRef.current !== sessionId) {
+          return;
+        }
+        const { setTodos } = useTodoStore.getState();
+        setTodos(item.todos as Parameters<typeof setTodos>[0]);
       },
       onError: (message) => {
         console.warn('[history.restore]', message);
@@ -1608,8 +1625,7 @@ function AppContent() {
           </div>
         )}
 
-        {activeNav === 'chat' && (
-          <>
+        <div style={activeNav !== 'chat' ? { display: 'none' } : { display: 'contents' }}>
             {/* Right sidebar toggle button */}
             <button
               className={`right-sidebar-toggle ${rightSidebarOpen ? 'right-sidebar-toggle--active' : ''}`}
@@ -1689,8 +1705,7 @@ function AppContent() {
                 />
               )}
             </div>
-          </>
-        )}
+        </div>
         {activeNav === 'agents' && (
           <div className="app-section">
             <PanelErrorBoundary panelName="Agent">

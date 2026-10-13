@@ -155,6 +155,25 @@ def emit_history_stream(gs, page_idx: int) -> None:
             "page_idx": page_idx,
             "total_pages": 1,
         })
+    # 追加 todo 恢复帧：从 record 中最后一次 todo_write 重建 todos，
+    # 使刷新浏览器后 TodoList 面板能恢复（刷新不走 live replay 路径）。
+    try:
+        from ...sessions.replay import _last_todos_from_record
+        from agent_core import todo_payload
+        last_todos = _last_todos_from_record(record)
+        if last_todos:
+            gs.agent.emit("history_message", {
+                "message": {
+                    "role": "assistant",
+                    "event_type": "todo.updated",
+                    "event_payload": {"todos": todo_payload(last_todos)},
+                },
+                "session_id": sid,
+                "page_idx": page_idx,
+                "total_pages": 1,
+            })
+    except Exception:
+        pass
     gs.agent.emit("history_message", {
         "status": "done",
         "session_id": sid,
