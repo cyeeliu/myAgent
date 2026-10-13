@@ -1,9 +1,12 @@
 """agent_core.session — extracted from code.py (s20 comprehensive agent)."""
+import logging
 from dataclasses import dataclass, asdict, field
 import queue
 import threading
 
 from agent_core.waitlock import WaitLock
+
+logger = logging.getLogger(__name__)
 
 
 EVENT_KINDS = ("token", "text", "tool_start", "tool_result",
@@ -145,8 +148,8 @@ class Session:
         for sink in self.record_sinks:
             try:
                 sink.append(msg)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("record_sink append failed: %s", e)
 
     def append_context(self, msg: dict) -> None:
         """Append an agent-internal control message to the LLM context ONLY —

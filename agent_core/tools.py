@@ -94,8 +94,16 @@ def run_bash(command: str, cwd: Path = None,
                                capture_output=True, text=True, timeout=120)
             sandbox_active = True
         else:
-            r = subprocess.run(command, shell=True, cwd=base,
-                               capture_output=True, text=True, timeout=120)
+            # Fail-closed: bwrap unavailable. Only proceed if SANDBOX=0 is
+            # explicitly set, otherwise refuse to run unsandboxed to prevent
+            # bash from reading sensitive files (e.g. /app/.env with API keys).
+            if os.environ.get("SANDBOX", "").strip() == "0":
+                r = subprocess.run(command, shell=True, cwd=base,
+                                   capture_output=True, text=True, timeout=120)
+            else:
+                return ("Error: sandbox (bwrap) unavailable and SANDBOX != 0. "
+                        "Set SANDBOX=0 to explicitly allow unsandboxed execution, "
+                        "or install bubblewrap for filesystem confinement.")
     except subprocess.TimeoutExpired:
         return ("Error: Timeout (120s). The command ran longer than 120s. "
                 "Re-run with run_in_background=true to let it continue detached, "
@@ -109,7 +117,11 @@ def run_bash(command: str, cwd: Path = None,
         out = (f"[WARNING: bash not sandboxed — command may access files "
                f"outside {base}. Install bubblewrap (bwrap) for full "
                f"filesystem confinement.]\n" + out)
-    return out[:50000] if out else "(no output)"
+    if not out:
+        return "(no output)"
+    if len(out) > 50000:
+        return out[:50000] + f"\n... [truncated, {len(out) - 50000} more chars]"
+    return out
 
 
 def run_task_output(task_id: str, timeout: int = 0) -> str:

@@ -14,6 +14,7 @@ Storage architecture:
     cache is the hot layer).
 """
 import json
+import logging
 import os
 import re
 import threading
@@ -21,6 +22,8 @@ import time
 from agent_core import adapter
 from agent_core.blocks import extract_text
 from agent_core.env import FALLBACK_MODEL, MODEL, workspace_dir
+
+logger = logging.getLogger(__name__)
 
 
 _MEM_DBG = os.environ.get("AGENT_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
@@ -276,8 +279,8 @@ def select_relevant_memories(messages: list, max_items: int = 5) -> list[str]:
                     if len(selected) >= max_items:
                         break
             return selected
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("memory operation failed: %s", e, exc_info=True)
 
     # Keyword fallback on name + description.
     keywords = [w.lower() for w in recent.split() if len(w) > 3]
@@ -362,8 +365,8 @@ def extract_memories(messages: list) -> int:
         try:
             write_memory_file(name, mem_type, desc, body)
             count += 1
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("memory operation failed: %s", e, exc_info=True)
     return count
 
 def consolidate_memories() -> None:
@@ -426,15 +429,15 @@ def consolidate_memories() -> None:
                 try:
                     _write_memory_file_raw(mem_dir / tmp_fname, name, mem_type, desc, body)
                     new_names.add(fname)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("memory operation failed: %s", e, exc_info=True)
         # Now delete old files that aren't in the new set.
         for old_name in old_names:
             if old_name not in new_names:
                 try:
                     (mem_dir / old_name).unlink()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("memory operation failed: %s", e, exc_info=True)
         # Rename temp files to final names.
         for fname in new_names:
             tmp = mem_dir / f".{fname}.tmp"
@@ -442,6 +445,6 @@ def consolidate_memories() -> None:
             try:
                 if tmp.exists():
                     tmp.rename(final)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("memory operation failed: %s", e, exc_info=True)
         _invalidate_cache()

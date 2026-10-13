@@ -52,7 +52,7 @@ class MCPClient:
             for t in (tl or {}).get("tools", [])
         ]
 
-    def _request(self, method, params):
+    def _request(self, method, params, timeout=30):
         if self._proc is None:
             raise RuntimeError(f"MCP server {self.name} has no process")
         self._req_id += 1
@@ -60,19 +60,46 @@ class MCPClient:
         msg = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
         self._proc.stdin.write(json.dumps(msg) + "\n")
         self._proc.stdin.flush()
-        while True:
-            line = self._proc.stdout.readline()
-            if not line:
-                raise RuntimeError(f"MCP server {self.name} closed stdout")
+
+        # 用线程 + Event 实现超时，防止 MCP server 挂起时 readline() 永久阻塞
+        result = [None]
+        error = [None]
+        done = threading.Event()
+
+        def _read_response():
             try:
-                resp = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # server printed a non-JSON line; skip
-            if resp.get("id") == rid:
-                if "error" in resp:
-                    raise RuntimeError(f"MCP error from {self.name}: {resp['error']}")
-                return resp.get("result", {})
-            # notification or unrelated response — ignore
+                while True:
+                    line = self._proc.stdout.readline()
+                    if not line:
+                        error[0] = RuntimeError(
+                            f"MCP server {self.name} closed stdout")
+                        return
+                    try:
+                        resp = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # server printed a non-JSON line; skip
+                    if resp.get("id") == rid:
+                        if "error" in resp:
+                            error[0] = RuntimeError(
+                                f"MCP error from {self.name}: {resp['error']}")
+                        else:
+                            result[0] = resp.get("result", {})
+                        return
+                    # notification or unrelated response — ignore
+            except Exception as e:
+                error[0] = e
+            finally:
+                done.set()
+
+        reader_thread = threading.Thread(target=_read_response, daemon=True)
+        reader_thread.start()
+        if not done.wait(timeout=timeout):
+            raise TimeoutError(
+                f"MCP server {self.name} timed out after {timeout}s "
+                f"on '{method}'")
+        if error[0] is not None:
+            raise error[0]
+        return result[0]
 
     def _notify(self, method, params):
         msg = {"jsonrpc": "2.0", "method": method, "params": params}

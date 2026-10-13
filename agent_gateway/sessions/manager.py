@@ -189,6 +189,11 @@ class SessionManager:
         with self._lock:
             gs = self._sessions.pop(sid, None)
         if gs is not None:
+            # Mark the session as dropped so the worker thread's finally block
+            # does NOT re-persist to DB (which would revive the deleted row via
+            # ON CONFLICT DO UPDATE). The worker checks gs._dropped before any
+            # db.save_chat_record / db.save_llm_context call.
+            gs._dropped = True
             # Unregister the A2A team callback so stale messages don't try to
             # re-invoke a dropped session. Use agent.workdir (the key used in
             # _build), NOT session_dir() which is threading.local.

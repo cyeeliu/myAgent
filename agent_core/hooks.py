@@ -1,9 +1,12 @@
 """agent_core.hooks — extracted from code.py (s20 comprehensive agent)."""
+import shlex
+import logging
 from agent_core.env import workdir
 from agent_core.session import CliPermission, Permission
 # safe_path imported lazily inside check_permission to avoid a hooks->tools->subagent->hooks
 # circular import at module load time.
 
+logger = logging.getLogger(__name__)
 
 HOOKS = {"UserPromptSubmit": [], "PreToolUse": [],
          "PostToolUse": [], "Stop": []}
@@ -18,9 +21,73 @@ def trigger_hooks(event: str, *args):
             return result
     return None
 
-DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="]
+DENY_LIST = ["rm -rf /", "sudo", "su ", "shutdown", "reboot", "mkfs", "dd if="]
 
 DESTRUCTIVE = ["rm ", "> /etc/", "chmod 777"]
+
+# 扩展的 deny 命令名集合（结构化检查用）
+_DENY_COMMANDS = {"sudo", "su", "shutdown", "reboot", "mkfs", "dd"}
+
+# rm 递归删除的危险路径
+_RM_DANGEROUS_PATHS = {"/", "/*", "$HOME/..", "~", "$HOME", "${HOME}"}
+
+
+def _normalize_command(command: str) -> str:
+    """规范化命令字符串：合并多余空格，使子串匹配不被空格变化绕过。"""
+    return ' '.join(command.split())
+
+
+def _check_bash_safety(command: str) -> tuple[bool, str | None]:
+    """结构化检查 bash 命令安全性。
+
+    返回 (is_destructive, deny_reason)：
+    - deny_reason 非 None → 硬拒绝，返回拒绝原因
+    - is_destructive=True 且 deny_reason=None → 需要用户确认（_ask）
+    - 两者都为 False/None → 安全，放行
+    """
+    normalized = _normalize_command(command)
+
+    # 1. 规范化后的子串匹配（防止双空格、tab 等绕过）
+    for pattern in DENY_LIST:
+        if pattern in normalized:
+            return False, f"Permission denied: '{pattern}' is on the deny list"
+
+    # 2. 结构化检查：用 shlex 解析命令名和参数
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        # shlex 解析失败（语法错误/不完整引号），用规范化子串匹配兜底
+        for token in DESTRUCTIVE:
+            if token in normalized:
+                return True, None
+        return False, None
+
+    if not tokens:
+        return False, None
+
+    cmd_name = tokens[0]
+
+    # 3. 检查命令名是否在 deny 集合中
+    if cmd_name in _DENY_COMMANDS:
+        return False, f"Permission denied: '{cmd_name}' is on the deny list"
+
+    # 4. 检查 rm 递归删除危险路径
+    if cmd_name == "rm":
+        flags = ''.join(t for t in tokens[1:] if t.startswith('-'))
+        is_recursive = 'r' in flags or '--recursive' in tokens
+        is_force = 'f' in flags or '--force' in tokens
+        if is_recursive:
+            for arg in tokens[1:]:
+                if arg in _RM_DANGEROUS_PATHS or arg.startswith('/') and arg.count('/') <= 1:
+                    return False, (f"Permission denied: recursive delete of "
+                                   f"root-like path '{arg}'")
+
+    # 5. 规范化后的 DESTRUCTIVE 子串匹配
+    for token in DESTRUCTIVE:
+        if token in normalized:
+            return True, None
+
+    return False, None
 
 # Plan-mode bash gate: bash is allowed for exploration (ls/cat/git status) but
 # must not mutate. Cf. Claude Code plan mode read-only enforcement. Substring
@@ -62,7 +129,8 @@ def _ask(permission, events, reason, detail, block):
     if resolver is not None:
         try:
             fut = resolver(block, request_id)
-        except Exception:
+        except Exception as e:
+            logger.warning("permission resolver failed: %s", e, exc_info=True)
             fut = None
         if events is not None:
             events.emit("permission_request", payload)
@@ -110,19 +178,20 @@ def check_permission(block, permission: Permission, events=None):
             sess = get_current_session()
             if sess is not None and sess.context.get("plan_mode"):
                 command = block.input.get("command", "")
+                normalized_cmd = _normalize_command(command)
                 for pat in _PLAN_MODE_BASH_DENY:
-                    if pat in command:
+                    if pat in normalized_cmd:
                         return (f"Permission denied in plan mode: '{pat.strip()}' "
                                 f"looks mutating. 完成探索后用 exit_plan_mode 提交方案，"
                                 f"批准即可执行写操作。")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("plan_mode bash check failed: %s", e, exc_info=True)
     if block.name == "bash":
         command = block.input.get("command", "")
-        for pattern in DENY_LIST:
-            if pattern in command:
-                return f"Permission denied: '{pattern}' is on the deny list"
-        if any(token in command for token in DESTRUCTIVE):
+        is_destructive, deny_reason = _check_bash_safety(command)
+        if deny_reason:
+            return deny_reason
+        if is_destructive:
             # Destructive commands always ask, even when policy=allow.
             if not _ask(permission, events, "destructive command",
                         command, block):
@@ -145,8 +214,8 @@ def check_permission(block, permission: Permission, events=None):
                     if not _ask(permission, events,
                                 "overwrite existing file", str(resolved), block):
                         return "Permission denied by user"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("overwrite check failed: %s", e, exc_info=True)
     if block.name.startswith("mcp__") and "deploy" in block.name:
         if not _ask(permission, events,
                     f"MCP destructive-looking tool: {block.name}",

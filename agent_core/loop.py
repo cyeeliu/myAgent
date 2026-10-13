@@ -1,5 +1,6 @@
 """agent_core.loop — extracted from code.py (s20 comprehensive agent)."""
 import concurrent.futures
+import logging
 import sys
 import threading
 import time
@@ -8,6 +9,8 @@ from agent_core import model_config
 from agent_core.background import (
     should_run_background, start_background_task, collect_background_results,
 )
+
+logger = logging.getLogger(__name__)
 from agent_core.blocks import has_tool_use
 from agent_core.compaction import compact_history, reactive_compact
 from agent_core.context import build_user_content, inject_background_notifications, inject_team_messages, prepare_context, update_context
@@ -39,8 +42,8 @@ def call_llm(messages: list, context: dict, tools: list,
             events.emit("context_usage",
                         {"tokens_used": _used, "context_max": _ctx_max,
                          "rate": round(_rate, 1)})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("context_usage emit failed: %s", e)
     return with_retry(
         lambda: adapter.chat_create(
             model=state.current_model,
@@ -78,8 +81,8 @@ def agent_loop(session: Session):
         session.context["memories"] = (
             (idx[:2000] + ("\n\n" + relevant if relevant else ""))[:4000] if (idx or relevant) else ""
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("memory load failed: %s", e, exc_info=True)
     _phase("load_memories")
 
     while True:
@@ -157,8 +160,8 @@ def agent_loop(session: Session):
                 print(f"[agent_loop] LLM call failed: {type(e).__name__}: {e}",
                       file=sys.stderr)
                 _tb.print_exc(file=sys.stderr)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("LLM failure log failed: %s", e)
             session.emit("error", {"error": f"{type(e).__name__}: {e}"})
             session.emit("done", {})
             return
@@ -216,8 +219,8 @@ def agent_loop(session: Session):
                     if written:
                         session.emit("memory", {"extracted": written})
                     consolidate_memories()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("memory background extract/consolidate failed: %s", e, exc_info=True)
 
             threading.Thread(target=_memory_background, daemon=True).start()
             session.emit("done", {})
@@ -379,8 +382,8 @@ def agent_loop(session: Session):
                     try:
                         from agent_core.tasks import todo_payload
                         session.emit("todo", {"todos": todo_payload(session.todos)})
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("todo emit failed: %s", e)
                 elif has_active_todos():
                     session.rounds_since_todo += 1
                 else:

@@ -67,6 +67,8 @@ class GatewaySession:
     _perm_lock: threading.Lock = field(default_factory=threading.Lock)
     _worker: Optional[threading.Thread] = None
     _worker_lock: threading.Lock = field(default_factory=threading.Lock)
+    _dropped: bool = False  # set by manager.drop() to prevent worker from
+                             # re-persisting a deleted session's data
     # User messages posted while the agent was blocked in the `wait` tool. The
     # current turn is interrupted (wait_lock.wake("user")) and these are drained
     # one per turn-end in _run_turn's finally, each starting a fresh turn.
@@ -183,6 +185,13 @@ class GatewaySession:
             except Exception:
                 pass
         finally:
+            # If the session was dropped while the worker was still running,
+            # do NOT re-persist to DB — that would revive a deleted session
+            # (ON CONFLICT DO UPDATE re-inserts the row).
+            if self._dropped:
+                with self._worker_lock:
+                    self._worker = None
+                return
             # Persist both stores at turn end: the append-only chat record and
             # the compacted LLM context snapshot. Redis ctx:{sid} mirrors the
             # context for fast hydrate without recompacting.
