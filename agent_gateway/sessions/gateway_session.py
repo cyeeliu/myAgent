@@ -53,6 +53,52 @@ class ChatRecordSink:
         self._pipe.append(msg)
 
 
+class ObsCollectorSink:
+    """Collects observability events (token_usage, trace.span, compacted,
+    memory, context_usage) into a dict for refresh recovery. Stored on
+    agent.context['_obs'] so it survives across turns."""
+
+    def __init__(self, ctx: dict):
+        self._ctx = ctx
+
+    def emit(self, kind: str, payload: dict):
+        obs = self._ctx.setdefault("_obs", {
+            "total_tokens_in": 0, "total_tokens_out": 0,
+            "last_token_usage": None, "spans": [],
+            "compactions": [], "memories": [],
+            "last_context_usage": None,
+        })
+        if kind == "token_usage":
+            p = payload.get("prompt_tokens", 0)
+            c = payload.get("completion_tokens", 0)
+            obs["total_tokens_in"] += p
+            obs["total_tokens_out"] += c
+            obs["last_token_usage"] = {"prompt_tokens": p, "completion_tokens": c,
+                                        "total_tokens": p + c}
+        elif kind == "trace.span":
+            spans = obs["spans"]
+            spans.append({
+                "event": payload.get("event", ""),
+                "name": payload.get("name", ""),
+                "duration_ms": payload.get("duration_ms", 0),
+                "tokens_in": payload.get("tokens_in", 0),
+                "tokens_out": payload.get("tokens_out", 0),
+                "tool": payload.get("tool", ""),
+            })
+            if len(spans) > 200:
+                del spans[:len(spans) - 200]
+        elif kind == "compacted":
+            obs["compactions"].append({"reason": payload.get("reason", "")})
+        elif kind == "memory":
+            obs["memories"].append({"extracted": payload.get("extracted", "")})
+        elif kind == "context_usage":
+            obs["last_context_usage"] = {
+                "tokens_used": payload.get("tokens_used", 0),
+                "context_max": payload.get("context_max", 0),
+                "rate": payload.get("rate", 0),
+            }
+
+
 @dataclass
 class GatewaySession:
     session_id: str

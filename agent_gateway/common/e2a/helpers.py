@@ -174,6 +174,45 @@ def emit_history_stream(gs, page_idx: int) -> None:
             })
     except Exception:
         pass
+    # 追加可观测性恢复帧：从 agent.context["_obs"] 和 record 中重建
+    # 可观测性数据，使刷新浏览器后 ChatObservabilityPanel 能恢复。
+    try:
+        obs = (gs.agent.context or {}).get("_obs", {})
+        tool_call_count = 0
+        turn_count = 0
+        for msg in record:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "assistant":
+                turn_count += 1
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    for b in content:
+                        if _block_type(b) == "tool_use":
+                            tool_call_count += 1
+        obs_payload = {
+            "total_tokens_in": obs.get("total_tokens_in", 0),
+            "total_tokens_out": obs.get("total_tokens_out", 0),
+            "last_token_usage": obs.get("last_token_usage"),
+            "spans": obs.get("spans", []),
+            "compactions": obs.get("compactions", []),
+            "memories": obs.get("memories", []),
+            "last_context_usage": obs.get("last_context_usage"),
+            "tool_call_count": tool_call_count,
+            "turn_count": turn_count,
+        }
+        gs.agent.emit("history_message", {
+            "message": {
+                "role": "assistant",
+                "event_type": "obs.replay",
+                "event_payload": obs_payload,
+            },
+            "session_id": sid,
+            "page_idx": page_idx,
+            "total_pages": 1,
+        })
+    except Exception:
+        pass
     gs.agent.emit("history_message", {
         "status": "done",
         "session_id": sid,

@@ -45,6 +45,17 @@ interface ChatObservabilityState {
   onContextUsage: (data: { tokens_used: number; context_max: number; rate: number }) => void;
   incrementTurn: () => void;
   reset: () => void;
+  restore: (data: {
+    totalTokensIn: number;
+    totalTokensOut: number;
+    tokenUsage: TokenUsage | null;
+    spanEvents: SpanEvent[];
+    compactionEvents: CompactionEvent[];
+    memoryEvents: MemoryEvent[];
+    contextUsage: { tokens_used: number; context_max: number; rate: number } | null;
+    toolCallCount: number;
+    turnCount: number;
+  }) => void;
 }
 
 const MAX_EVENTS = 200;
@@ -104,5 +115,18 @@ export const useChatObservabilityStore = create<ChatObservabilityState>((set) =>
       contextUsage: null,
       toolCallCount: 0,
       turnCount: 0,
+    }),
+
+  restore: (data) =>
+    set({
+      totalTokensIn: data.totalTokensIn,
+      totalTokensOut: data.totalTokensOut,
+      tokenUsage: data.tokenUsage,
+      spanEvents: data.spanEvents,
+      compactionEvents: data.compactionEvents,
+      memoryEvents: data.memoryEvents,
+      contextUsage: data.contextUsage,
+      toolCallCount: data.toolCallCount,
+      turnCount: data.turnCount,
     }),
 }));

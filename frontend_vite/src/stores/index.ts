@@ -7,4 +7,5 @@ export { useTodoStore } from './todoStore';
 export { useSessionStore } from './sessionStore';
 export { useHarnessStore } from './harnessStore';
 export { useEvalStore } from './evalStore';
+export { useChatObservabilityStore } from './chatObservabilityStore';
 export type { HarnessStageInfo, HarnessStageStatus, CachedFileTreeEntry } from './harnessStore';

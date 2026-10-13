@@ -55,7 +55,7 @@ import { useWebSocket } from './hooks';
 import { webRequest } from './services/webClient';
 import { useTeamPanelState } from './features/teamPanelState';
 import { AgentMode, MediaItem, UserAnswer, ModelEntry } from './types';
-import { useSessionStore, useChatStore, useTodoStore, useHarnessStore } from './stores';
+import { useSessionStore, useChatStore, useTodoStore, useHarnessStore, useChatObservabilityStore } from './stores';
 import { useTranslation } from 'react-i18next';
 import {
   normalizeA2UIEnabled,
@@ -1077,6 +1077,23 @@ function AppContent() {
         }
         const { setTodos } = useTodoStore.getState();
         setTodos(item.todos as Parameters<typeof setTodos>[0]);
+      },
+      onObsReplay: (item) => {
+        if (sessionIdRef.current !== sessionId) {
+          return;
+        }
+        const now = Date.now();
+        useChatObservabilityStore.getState().restore({
+          totalTokensIn: item.total_tokens_in || 0,
+          totalTokensOut: item.total_tokens_out || 0,
+          tokenUsage: item.last_token_usage || null,
+          spanEvents: (item.spans || []).map((s, i) => ({ ...s, timestamp: now - (item.spans!.length - i) })),
+          compactionEvents: (item.compactions || []).map((c, i) => ({ ...c, timestamp: now - (item.compactions!.length - i) })),
+          memoryEvents: (item.memories || []).map((m, i) => ({ ...m, timestamp: now - (item.memories!.length - i) })),
+          contextUsage: item.last_context_usage || null,
+          toolCallCount: item.tool_call_count || 0,
+          turnCount: item.turn_count || 0,
+        });
       },
       onError: (message) => {
         console.warn('[history.restore]', message);

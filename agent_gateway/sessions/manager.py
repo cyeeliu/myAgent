@@ -18,7 +18,7 @@ from agent_gateway import db
 from agent_gateway import pipe as pipe_mod
 
 from ._constants import PERMISSION_TIMEOUT, SESSION_STATE_ROOT
-from .gateway_session import GatewaySession, PipeSink, ChatRecordSink
+from .gateway_session import GatewaySession, PipeSink, ChatRecordSink, ObsCollectorSink
 from .replay import synthesize_frames, _last_todos_from_record
 from .files import _write_session_files
 
@@ -54,6 +54,7 @@ class SessionManager:
                         sinks=[sink], permission=permission,
                         context=update_context({}, []))
         agent.record_sinks = [ChatRecordSink(chat_pipe)]
+        agent.sinks.append(ObsCollectorSink(agent.context))
         agent.workdir = SESSION_STATE_ROOT / sid
         # Rehydrate the mode flag so a plan-mode session resumed after idle
         # eviction / replica crash keeps its read-only restriction. The DB mode
