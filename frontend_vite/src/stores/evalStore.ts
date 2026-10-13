@@ -101,7 +101,7 @@ interface EvalState {
 
   // Event reducers (called by useWebSocket)
   onEvalProgress: (p: { run_id: string; task_id: string; rep: number; status: string; turn?: number; tool_call_count?: number }) => void;
-  onEvalTaskComplete: (p: { run_id: string; task_id: string; scores: Record<string, number>; metrics: Record<string, number> }) => void;
+  onEvalTaskComplete: (p: { run_id: string; task_id: string; rep: number; status: string; scores: Record<string, number>; metrics: Record<string, number> }) => void;
   onEvalRunComplete: (p: { run_id: string; scorecard: Scorecard; duration_s: number; total_tasks: number }) => void;
   onEvalRunError: (p: { run_id: string; error: string }) => void;
 }

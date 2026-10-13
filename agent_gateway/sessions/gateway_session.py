@@ -79,6 +79,7 @@ class ObsCollectorSink:
             spans = obs["spans"]
             spans.append({
                 "event": payload.get("event", ""),
+                "span_id": payload.get("span_id", ""),
                 "name": payload.get("name", ""),
                 "duration_ms": payload.get("duration_ms", 0),
                 "tokens_in": payload.get("tokens_in", 0),

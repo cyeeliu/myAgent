@@ -61,7 +61,7 @@ export interface HistoryObsReplayItem {
   total_tokens_in: number;
   total_tokens_out: number;
   last_token_usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
-  spans: Array<{ event: string; name: string; duration_ms: number; tokens_in: number; tokens_out: number; tool: string }>;
+  spans: Array<{ event: string; span_id: string; name: string; duration_ms: number; tokens_in: number; tokens_out: number; tool: string }>;
   compactions: Array<{ reason: string }>;
   memories: Array<{ extracted: string }>;
   last_context_usage: { tokens_used: number; context_max: number; rate: number } | null;
