@@ -7,7 +7,7 @@ interface TokenUsage {
 }
 
 interface SpanEvent {
-  event: 'start' | 'end';
+  event: string;
   span_id: string;
   name: string;
   duration_ms?: number;
